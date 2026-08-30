@@ -77,12 +77,21 @@ public partial class PopupWindow : Window
     private Color _highlightBg;
     private Color _highlightFg;
 
+    /// <summary>Owns the card surface - see <see cref="CardStyler"/>. Shared with the Alt+E card so
+    /// one setting genuinely governs both.</summary>
+    private readonly CardStyler _styler;
+
     public PopupWindow()
     {
         InitializeComponent();
         _isDarkMode = ThemeService.IsDark;
+        _styler = new CardStyler(this, RootCard, CardShadow, GlassBackdropLayer, GlassTintLayer);
         RootCard.SizeChanged += OnCardSizeChanged;
         ApplyBaseColors();
+
+        // A style is always applied again from Settings before the popup is shown; this is only so
+        // a popup constructed on its own (the smoke tests) still comes up looking like a card.
+        ApplyStyle(CardStyler.Minimal);
 
         PopulateSourceCombo(DictionarySourceCombo, TranslationService.DictionaryProviders, "Definition source");
         PopulateSourceCombo(TranslationSourceCombo, TranslationService.TranslationProviders, "Translation source");
@@ -144,6 +153,10 @@ public partial class PopupWindow : Window
     private void OnCardSizeChanged(object sender, SizeChangedEventArgs e)
     {
         UpdateCardClip();
+
+        // The popup grows when a source switcher fetches a longer definition, so the Glass blur has
+        // to be re-cropped for the card's new footprint.
+        _styler.RefreshBackdrop();
     }
 
     private void UpdateCardClip()
@@ -158,101 +171,36 @@ public partial class PopupWindow : Window
     }
 
     /// <summary>
-    /// Applies an extracted game accent theme to the popup.
-    /// Must be called before SetTranslationResult and after construction.
+    /// Applies the user's chosen popup style. Must be called before <see cref="Show"/>, and again
+    /// (via <see cref="RefreshBackdrop"/>) whenever the card moves, so the Glass blur stays lined
+    /// up with what is actually behind it.
     /// </summary>
-    public void ApplyGameTheme(PopupTheme theme, string style)
+    /// <param name="backdrop">The screen snapshot the Glass style blurs; ignored by the other two,
+    /// and null when the capture failed, which degrades Glass to a plain translucent card.</param>
+    public void ApplyStyle(string? style, ScreenBackdrop? backdrop = null)
     {
-        if (theme.IsFromGame)
+        // Fluent and Glass are the styles that carry the Windows accent; Minimal keeps the app's
+        // own quiet purple, because the whole point of it is not to assert a colour at all.
+        if (CardStyler.Normalize(style) != CardStyler.Minimal)
         {
-            _accentColor = theme.Accent;
-            _accentLight = theme.AccentLight;
-            _highlightBg = theme.Accent;
-            _highlightFg = IsLightColor(theme.Accent) ? Color.FromRgb(0x1A, 0x1A, 0x1A) : Colors.White;
+            _accentColor = AccentColorService.AccentFor(_isDarkMode);
+            _accentLight = Color.FromArgb(_isDarkMode ? (byte)30 : (byte)25, _accentColor.R, _accentColor.G, _accentColor.B);
         }
 
-        ApplyVisualStyle(style);
+        ApplyColorsToElements();
+
+        // Last, because the card surface itself belongs to the styler - under Glass it stays
+        // transparent so the blur underneath shows through.
+        _styler.Backdrop = backdrop;
+        _styler.Apply(style, _bgColor, _isDarkMode);
+
+        AccentStripe.Visibility = Visibility.Collapsed;
         UpdateCardClip();
     }
 
-    /// <summary>Popup styles, in the order Settings offers them. Minimal is the default.</summary>
-    public static readonly (string Id, string Label)[] Styles =
-    [
-        ("Minimal", "Minimal"),
-        ("Fluent", "Fluent"),
-        ("Glass", "Glass"),
-    ];
-
-    private void ApplyVisualStyle(string style)
-    {
-        switch (style)
-        {
-            case "Glass":
-            case "Glassmorphism": // pre-0.5 name
-                ApplyGlass();
-                break;
-            case "Fluent":
-            case "CleanMatte": // pre-0.5 name
-                ApplyFluent();
-                break;
-            default:
-                ApplyMinimal();
-                break;
-        }
-    }
-
-    /// <summary>
-    /// The default. Follows WinUI/WPF-UI surface conventions rather than inventing a look: a plain
-    /// card, a hairline border in the theme's own stroke colour, a soft shadow and no accent
-    /// decoration at all. The previous default drew a coloured stripe across the top of every
-    /// popup, which is a lot of visual assertion for something that appears over whatever you are
-    /// already reading.
-    /// </summary>
-    private void ApplyMinimal()
-    {
-        RootCard.Background = new SolidColorBrush(_bgColor);
-        RootCard.CornerRadius = new CornerRadius(8);
-        RootCard.BorderThickness = new Thickness(1);
-        RootCard.BorderBrush = new SolidColorBrush(_isDarkMode
-            ? Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF)
-            : Color.FromArgb(0x14, 0x00, 0x00, 0x00));
-
-        CardShadow.BlurRadius = 16;
-        CardShadow.ShadowDepth = 2;
-        CardShadow.Opacity = 0.14;
-
-        AccentStripe.Visibility = Visibility.Collapsed;
-    }
-
-    /// <summary>Slightly more present: rounder, with a faint accent edge picked up from the
-    /// screen when adaptive theming is on.</summary>
-    private void ApplyFluent()
-    {
-        RootCard.Background = new SolidColorBrush(_bgColor);
-        RootCard.CornerRadius = new CornerRadius(10);
-        RootCard.BorderThickness = new Thickness(1);
-        RootCard.BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, _accentColor.R, _accentColor.G, _accentColor.B));
-
-        CardShadow.BlurRadius = 24;
-        CardShadow.ShadowDepth = 4;
-        CardShadow.Opacity = 0.20;
-
-        AccentStripe.Visibility = Visibility.Collapsed;
-    }
-
-    private void ApplyGlass()
-    {
-        RootCard.Background = new SolidColorBrush(Color.FromArgb(0xC8, _bgColor.R, _bgColor.G, _bgColor.B));
-        RootCard.CornerRadius = new CornerRadius(14);
-        RootCard.BorderThickness = new Thickness(1);
-        RootCard.BorderBrush = new SolidColorBrush(Color.FromArgb(0x40, _accentColor.R, _accentColor.G, _accentColor.B));
-
-        CardShadow.BlurRadius = 32;
-        CardShadow.ShadowDepth = 4;
-        CardShadow.Opacity = 0.18;
-
-        AccentStripe.Visibility = Visibility.Collapsed;
-    }
+    /// <summary>Re-registers the Glass blur with the screen after the card has been moved or
+    /// resized. A no-op under the other styles.</summary>
+    public void RefreshBackdrop() => _styler.RefreshBackdrop();
 
     private void ApplyBaseColors()
     {
@@ -290,7 +238,6 @@ public partial class PopupWindow : Window
 
     private void ApplyColorsToElements()
     {
-        RootCard.Background = new SolidColorBrush(_bgColor);
         TranslationHeader.Foreground = new SolidColorBrush(_mutedColor);
         MeaningHeader.Foreground = new SolidColorBrush(_mutedColor);
         OriginalWordText.Foreground = new SolidColorBrush(_textColor);
@@ -299,6 +246,18 @@ public partial class PopupWindow : Window
         SynonymsText.Foreground = new SolidColorBrush(_mutedColor);
         Divider.Background = new SolidColorBrush(_dividerColor);
         CefrBadge.Background = new SolidColorBrush(_accentColor);
+
+        // The badge now wears whatever the user picked in Windows, which includes the yellows and
+        // pale greens that white text disappears into.
+        CefrLevelText.Foreground = new SolidColorBrush(
+            IsLightColor(_accentColor) ? Color.FromRgb(0x1A, 0x1A, 0x1A) : Colors.White);
+
+        // The copy glyphs are strokes, not text, so they don't inherit a foreground.
+        var muted = new SolidColorBrush(_mutedColor);
+        CopyTranslationBtnIcon.Stroke = muted;
+        CopyWordBtnIcon.Stroke = muted;
+        CopyWordInlineBtnIcon.Stroke = muted;
+
         PosBadge.Background = new SolidColorBrush(_badgeBg);
         PartOfSpeechText.Foreground = new SolidColorBrush(_badgeText);
         AccentStripe.Background = new SolidColorBrush(_accentColor);
@@ -799,14 +758,57 @@ public partial class PopupWindow : Window
     {
         var text = new TextRange(TranslatedSentenceBox.Document.ContentStart,
                                 TranslatedSentenceBox.Document.ContentEnd).Text;
-        if (!string.IsNullOrEmpty(text))
-            Clipboard.SetText(text);
+
+        Copy(text, CopyTranslationBtnIcon, CopyTranslationTick);
     }
 
-    private void CopyWord_Click(object sender, RoutedEventArgs e)
+    private void CopyWord_Click(object sender, RoutedEventArgs e) =>
+        Copy(OriginalWordText.Text, CopyWordBtnIcon, CopyWordTick);
+
+    private void CopyWordInline_Click(object sender, RoutedEventArgs e) =>
+        Copy(OriginalWordText.Text, CopyWordInlineBtnIcon, CopyWordInlineTick);
+
+    /// <summary>Raised with whatever the popup put on the clipboard, so the selection watcher can
+    /// tell our own copy apart from the user copying something new to translate - the same contract
+    /// the explain card and the region overlay already had, and the reason copying from here used
+    /// to make the app translate what it had just copied.</summary>
+    public event EventHandler<string>? TextCopied;
+
+    private void Copy(string? text, UIElement icon, UIElement tick)
     {
-        var text = OriginalWordText.Text;
-        if (!string.IsNullOrEmpty(text))
+        text = text?.Trim();
+        if (string.IsNullOrEmpty(text)) return;
+
+        try
+        {
+            // Announced before the write: the clipboard notification arrives synchronously.
+            TextCopied?.Invoke(this, text);
             Clipboard.SetText(text);
+        }
+        catch (Exception ex)
+        {
+            // Another application can hold the clipboard open; not worth interrupting anyone over.
+            Serilog.Log.Debug(ex, "Could not copy from the popup");
+            return;
+        }
+
+        ShowCopied(icon, tick);
+    }
+
+    /// <summary>Swaps the copy glyph for a tick briefly - a click with no visible effect reads as a
+    /// broken button, which is most of what was wrong with the old one.</summary>
+    private static void ShowCopied(UIElement icon, UIElement tick)
+    {
+        icon.Visibility = Visibility.Collapsed;
+        tick.Visibility = Visibility.Visible;
+
+        var revert = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1100) };
+        revert.Tick += (_, _) =>
+        {
+            revert.Stop();
+            icon.Visibility = Visibility.Visible;
+            tick.Visibility = Visibility.Collapsed;
+        };
+        revert.Start();
     }
 }

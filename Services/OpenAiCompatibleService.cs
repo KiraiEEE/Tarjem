@@ -99,6 +99,34 @@ public sealed class OpenAiCompatibleService
         }
     }
 
+    /// <summary>
+    /// "What is this?" (Alt+E), for names Wikipedia and Wikidata both came back empty on. Returns
+    /// null when the request failed <em>and</em> when the model said it didn't recognize the name -
+    /// which for a 70B model asked about an obscure proper noun is the common case, and the one
+    /// <see cref="EncyclopediaAnswerParser"/> exists to enforce.
+    /// </summary>
+    public async Task<EncyclopediaAnswer?> ExplainAsync(
+        string term, string sourceLanguageName, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(term)) return null;
+
+        try
+        {
+            var content = await CompleteAsync(
+                TranslationPrompts.EncyclopediaSystemInstruction(sourceLanguageName),
+                TranslationPrompts.EncyclopediaRequest(term, sourceLanguageName),
+                maxTokens: 512, ct);
+
+            return EncyclopediaAnswerParser.Parse(content);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "{Provider} encyclopedia lookup failed", Id);
+            return null;
+        }
+    }
+
     /// <summary>One round trip against the shared endpoint. Public so the Settings "check this
     /// source" indicator can probe it without a translation to show for it.</summary>
     public async Task<bool> TestAsync(CancellationToken ct = default)

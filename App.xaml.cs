@@ -111,6 +111,17 @@ public partial class App : Application
 
         _lookupPipeline = new LookupPipeline(_ocrService, _translationService, _settingsService, _historyService);
 
+        // Building a Windows OCR engine takes a noticeable moment, and the constructor only ever
+        // builds the English one. Anyone reading in another language paid for theirs on their very
+        // first lookup - the one press where the app has yet to prove it's quick. Off the UI thread
+        // and best-effort: a language pack that isn't installed is handled at lookup time anyway.
+        var warmUpLanguage = _settingsService.Current.SourceLanguage;
+        _ = Task.Run(() =>
+        {
+            try { _ocrService.WarmUp(warmUpLanguage); }
+            catch (Exception ex) { Log.Debug(ex, "OCR warm-up for {Language} failed", warmUpLanguage); }
+        });
+
         _regionTranslationService = new RegionTranslationService(
             _ocrService, _translationService, _settingsService);
 
@@ -348,6 +359,11 @@ public partial class App : Application
         var cts = new CancellationTokenSource();
         _cts = cts;
 
+        // Tear down a region translation still on screen for the same reason the region hotkey
+        // tears down a word popup: the two can't coexist, and a leftover region overlay keeps the
+        // screen dimmed.
+        _regionTranslationService?.Cancel();
+
         try
         {
             var cursor = System.Windows.Forms.Cursor.Position;
@@ -355,6 +371,11 @@ public partial class App : Application
             // Alt+E shows its card immediately in a loading state, because the encyclopedia round
             // trip is the slowest of the three hotkeys and a key that appears to do nothing for a
             // second reads as broken.
+            //
+            // Alt+Q deliberately does NOT do this. Putting its highlight up before the lookup
+            // finished made the wait feel shorter, and cost far more than it bought: every path
+            // that ended without a result then had to remember to take the overlay back down
+            // again, and the one that didn't left the whole screen dimmed until the next click.
             var word = mode == LookupMode.Explain
                 ? await _lookupPipeline.PeekWordAsync(cursor, cts.Token)
                 : null;
@@ -369,18 +390,19 @@ public partial class App : Application
 
             var outcome = await _lookupPipeline.RunAsync(mode, cursor, cts.Token, word);
 
-            if (outcome == null || IsStale(generation))
-            {
-                _overlayService.HideExplain();
+            // A newer press has superseded this one, so it now owns the shared overlay. Bow out
+            // without touching it: tearing anything down here would pull the highlight or loading
+            // card out from under the press that replaced us. That press is responsible for its
+            // own cleanup.
+            if (IsStale(generation))
                 return;
-            }
 
-            using var capture = outcome.Capture;
-
-            if (outcome.Result == null)
+            // No answer to show - nothing under the cursor, or the lookup came back empty. Anything
+            // an earlier stage put on screen (the Alt+E loading card, the highlight, and above all
+            // the full-screen dim) has to come down now. Only calling HideExplain here is what left
+            // the whole screen greyed out until the next click.
+            if (outcome?.Result == null)
             {
-                // Drop the highlight rather than leaving it hanging over a word with no result
-                // ever arriving.
                 _overlayService.DismissAll();
                 return;
             }
@@ -391,9 +413,11 @@ public partial class App : Application
                 return;
             }
 
+            // Clear any loading card a previous Alt+E press left behind before showing the word popup.
+            _overlayService.HideExplain();
             _overlayService.ShowHighlight(outcome.WordRectPhysical);
             _mainWindow?.RefreshHistory();
-            _overlayService.ShowTranslationPopup(outcome.WordRectPhysical, outcome.Result, capture);
+            _overlayService.ShowTranslationPopup(outcome.WordRectPhysical, outcome.Result);
         }
         catch (OperationCanceledException)
         {
@@ -412,6 +436,13 @@ public partial class App : Application
     {
         if (_regionTranslationService == null || _ocrService == null)
             return;
+
+        // A word lookup and a region translation can't both be on screen at once. Without this,
+        // an Alt+Q popup (and its full-screen dim) stayed up behind the region flow and was still
+        // there - greying the whole screen - after the region overlay was dismissed.
+        Interlocked.Increment(ref _generation);
+        _cts?.Cancel();
+        _overlayService?.DismissAll();
 
         _regionTranslationService.StartRegionTranslation();
     }

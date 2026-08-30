@@ -54,8 +54,11 @@
                 Opacity="0"/>
 
         <!-- Dark plate behind the region, sized/positioned in code -->
+        <!-- Fully opaque on purpose. At 90% the text underneath stayed faintly legible, and a
+             translation you can read the original through does not read as a translation - it
+             reads as two lines of text on top of each other. -->
         <Border x:Name="HighlightBorder"
-                Background="#E6111111"
+                Background="#FF111111"
                 CornerRadius="4"
                 Opacity="0"
                 Visibility="Collapsed"

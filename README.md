@@ -36,10 +36,16 @@ from somewhere else instead of failing, and your setting is never rewritten behi
 |---|---|
 | **Definitions** | FreeDictionaryAPI · dictionaryapi.dev · Wiktionary · Gemini · Merriam-Webster |
 | **Translation** | Google Translate · Gemini · Groq · Cerebras · Lingva · MyMemory |
-| **Names** | Wikipedia — for "NVIDIA" and other words no dictionary carries |
+| **Names** | Wikipedia · Wikidata · Gemini · Groq · Cerebras — for "NVIDIA" and other words no dictionary carries |
 
 AI translation is *transcreation*, not word-for-word: the sentence is rewritten the way a native
 speaker would have said it.
+
+For names, the wikis come first because an answer from them is a page you can go and read. The AI
+sources sit behind them for the long tail neither wiki has an entry for — a character, a small
+studio, a product — and they are asked to say when they don't recognize a name rather than guess.
+An answer from one of them is a recollection rather than a record, so it carries the model's name
+instead of a "Read more" link.
 
 ## Shortcuts
 
@@ -79,8 +85,8 @@ dotnet test Tarjem.UiTests/Tarjem.UiTests.csproj
 ```
 
 Packaging with bundled API keys: put them in a `.env` beside the built exe, run
-`Tarjem.exe --pack-keys`, delete the `.env`, then build the installer. See `API-KEYS-TO-GET.txt`
-and `SECURITY.md` — **never put a key in a `.cs` file.**
+`Tarjem.exe --pack-keys`, delete the `.env`, then build the installer.
+**Never put a key in a `.cs` file.**
 
 ## Your data
 
@@ -95,7 +101,4 @@ Everything stays on your machine, in `%LOCALAPPDATA%\Tarjem\`:
 
 The only thing that leaves is the word or region being translated, sent to the source you picked.
 
-## More
 
-- [`SECURITY.md`](SECURITY.md) — key handling, and the 2026-08 leaked-key incident
-- [`FUTURE-WORK.md`](FUTURE-WORK.md) — offline mode, PaddleOCR, and what was deferred and why

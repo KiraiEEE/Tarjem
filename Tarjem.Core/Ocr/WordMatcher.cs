@@ -6,10 +6,21 @@ namespace Tarjem.Core.Ocr;
 /// <param name="Word">The matched word, or null when nothing was close enough to the cursor.</param>
 /// <param name="Target">The word to actually look up - spell-corrected for English.</param>
 /// <param name="Context">The sentence the word sits in, for context-aware translation.</param>
-public sealed record WordMatch(RecognizedWord? Word, string Target, string Context)
+/// <param name="Raw">What OCR actually read, when correction changed it - otherwise empty.
+///
+/// Spelling correction has to decide "is this a real word?" against a 47,000-word frequency list,
+/// and that list is wrong about a great many real words: English derives freely, so "governorate"
+/// is absent from it while "governor" sits three edits away, and the correction looked like a
+/// repair. A list can only ever be extended; the dictionary the app is about to query already
+/// knows every real word, in every language it supports. So both spellings travel forward and the
+/// dictionary arbitrates - if it has an entry for what OCR read, OCR was right.</param>
+public sealed record WordMatch(RecognizedWord? Word, string Target, string Context, string Raw = "")
 {
     public static readonly WordMatch None = new(null, string.Empty, string.Empty);
     public bool Found => Word != null && Target.Length > 0;
+
+    /// <summary>True when correction proposed a different word, so there is something to arbitrate.</summary>
+    public bool WasCorrected => Raw.Length > 0 && !Raw.Equals(Target, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -46,7 +57,10 @@ public static class WordMatcher
         var context = BuildContext(text, anchor);
         var target = CorrectIfEnglish(raw, text.LineTextAt(word.LineIndex), word, cursorX, languageTag);
 
-        return new WordMatch(word, target, context.Trim());
+        // The uncorrected reading rides along so the dictionary can overrule the correction.
+        var asRead = LettersOnly(raw);
+
+        return new WordMatch(word, target, context.Trim(), asRead);
     }
 
     // ── Which word ──────────────────────────────────────────────────────────────────────

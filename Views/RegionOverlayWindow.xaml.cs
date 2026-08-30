@@ -31,14 +31,20 @@ public partial class RegionOverlayWindow : Window
     private const double DimOpacity = 0.10;
 
     /// <summary>Never render translated text smaller than this - matching a tiny source font
-    /// exactly is pointless if the result can't be read.</summary>
-    private const double MinFontSize = 10;
+    /// exactly is pointless if the result can't be read. Lower than it once was, because the
+    /// overlay now stays inside the region the user dragged: a couple of points of legibility is a
+    /// better trade than text spilling out of the box it is supposed to be covering.</summary>
+    private const double MinFontSize = 8;
     private const double MaxFontSize = 40;
 
     /// <summary>Cap used when the source font size couldn't be estimated and we fall back to
     /// "as large as fits". Without it, a short translation in a big region got blown up to
     /// poster size - the reason the overlay text looked huge.</summary>
-    private const double FallbackMaxFontSize = 22;
+    private const double FallbackMaxFontSize = 18;
+
+    /// <summary>How much of the original's measured size the translation starts at. Under one
+    /// because the translation is nearly always the longer text.</summary>
+    private const double SourceSizeAllowance = 0.88;
 
     /// <summary>Padding between the plate's edges and the text inside it.</summary>
     private const double PlatePadX = 10;
@@ -195,6 +201,11 @@ public partial class RegionOverlayWindow : Window
         ApplyPlate(_regionDip);
         PlaceAt(LoadingPanel, _regionDip);
     }
+
+    /// <summary>The rectangle the translation is currently drawn in, in DIPs. Exposed so a test
+    /// can assert the thing that is easy to regress and impossible to see otherwise: that it never
+    /// grows past the region the user dragged.</summary>
+    public Rect PlateBounds => _plateDip;
 
     /// <summary>Positions the plate, the text inside it and the chip above it.</summary>
     private void ApplyPlate(Rect plate)
@@ -431,8 +442,10 @@ public partial class RegionOverlayWindow : Window
         const double PlateTint = 0.06;
         const double TextTint = 0.12;
 
+        // Opaque, whatever the tint. The plate's job is to replace the text under it, and any
+        // transparency at all leaves the original showing through the translation.
         HighlightBorder.Background = new SolidColorBrush(Color.FromArgb(
-            0xE6,
+            0xFF,
             Mix(0x14, accent.R, PlateTint),
             Mix(0x14, accent.G, PlateTint),
             Mix(0x14, accent.B, PlateTint)));
@@ -487,7 +500,12 @@ public partial class RegionOverlayWindow : Window
         {
             // The estimate describes the source text's apparent size; convert it into this
             // font's own scale so Arabic doesn't come out smaller than the text it replaces.
-            fontSize = Clamp(UiFonts.SizeFor(_sourceFontSizeDip, _isRtl), MinFontSize, MaxFontSize);
+            //
+            // Then take a little off it. A translation is normally longer than what it replaced,
+            // so starting at exactly the original's size means the fit below almost always has to
+            // shrink it anyway - and starting slightly under lands more text at a size that was
+            // chosen rather than salvaged.
+            fontSize = Clamp(UiFonts.SizeFor(_sourceFontSizeDip, _isRtl) * SourceSizeAllowance, MinFontSize, MaxFontSize);
         }
         else
         {
@@ -509,25 +527,33 @@ public partial class RegionOverlayWindow : Window
             ? 0
             : MeasureHeight(originalText, sourceFont, sourceFlow, originalSize, maxWidth) + 4;
 
+        // Shrink as far as it takes, rather than the 30% this used to allow before growing the
+        // plate instead. The overlay is drawing over a specific rectangle the user dragged around
+        // specific text; a plate that grows past it covers whatever was next to that text, which
+        // is at best confusing and at worst hides the thing they were about to read.
         var textHeight = MeasureHeight(displayText, fontFamily, flow, fontSize, maxWidth);
         if (textHeight + originalHeight > maxHeight)
         {
-            // Give up at most 30% of the source size before preferring a taller plate.
-            var floor = Math.Max(MinFontSize, fontSize * 0.7);
-            fontSize = FitFontSize(displayText, fontFamily, flow, maxWidth, maxHeight - originalHeight, floor, fontSize);
+            fontSize = FitFontSize(displayText, fontFamily, flow, maxWidth, maxHeight - originalHeight, MinFontSize, fontSize);
             textHeight = MeasureHeight(displayText, fontFamily, flow, fontSize, maxWidth);
         }
 
-        var neededHeight = textHeight + originalHeight;
-        ApplyPlate(neededHeight > maxHeight
-            ? GrowPlate(_regionDip, neededHeight + PlatePadY * 2)
-            : _regionDip);
+        ApplyPlate(_regionDip);
 
         TextContainer.FlowDirection = flow;
 
         ApplyTextBlock(OriginalText, originalText, sourceFont, sourceFlow, originalSize, FontWeights.Normal);
         ApplyTextBlock(TranslatedText, displayText, fontFamily, flow, fontSize, FontWeights.SemiBold);
         OriginalText.Visibility = string.IsNullOrWhiteSpace(originalText) ? Visibility.Collapsed : Visibility.Visible;
+
+        // Last resort, for a translation that will not fit even at the smallest readable size: cap
+        // the block's height so the tail ellipsizes on the last line that fits. Without it the
+        // container's clip simply sliced a line of text in half, which reads as a rendering bug
+        // rather than as "there is more". The copy button still yields the whole translation.
+        TranslatedText.MaxHeight = Math.Max(0, maxHeight - originalHeight);
+        TranslatedText.TextTrimming = textHeight > maxHeight - originalHeight
+            ? TextTrimming.CharacterEllipsis
+            : TextTrimming.None;
     }
 
     private static void ApplyTextBlock(System.Windows.Controls.TextBlock block, string text,
@@ -592,18 +618,6 @@ public partial class RegionOverlayWindow : Window
         };
 
         return formatted.Height;
-    }
-
-    /// <summary>Extends the plate downwards to the height the text needs, sliding it up when
-    /// that would run off the bottom of the monitor.</summary>
-    private Rect GrowPlate(Rect plate, double neededHeight)
-    {
-        var height = Math.Min(neededHeight, Math.Max(plate.Height, Height - 8));
-        var top = plate.Top;
-        if (top + height > Height - 4)
-            top = Math.Max(4, Height - 4 - height);
-
-        return new Rect(plate.Left, top, plate.Width, height);
     }
 
     // ── Line splitting (unchanged behaviour: mirror the OCR's line count when possible) ──

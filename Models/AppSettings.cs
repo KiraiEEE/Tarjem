@@ -25,6 +25,12 @@ public class AppSettings
     public string DefaultDictionaryProvider { get; set; } = "freedictionaryapi.com";
     public string DefaultTranslationProvider { get; set; } = "google";
 
+    /// <summary>Which source Alt+E asks first. Wikipedia by default rather than one of the AI
+    /// sources, because a wiki that answers can be linked to and an AI that answers cannot - the
+    /// models are there for the long tail neither wiki carries, and the failover reaches them on
+    /// its own without anyone having to opt in.</summary>
+    public string DefaultEncyclopediaProvider { get; set; } = "wikipedia";
+
     // ── Word popup (Alt+Q) sections ──
 
     /// <summary>Show the definition block in the word popup. Turning both this and
@@ -108,12 +114,11 @@ public class AppSettings
     /// always came back windowed.</summary>
     public bool MainWindowMaximized { get; set; }
 
-    /// <summary>Popup visual style: "Minimal" (the default - WinUI-flavoured, plain and quiet),
-    /// "Fluent" (WPF-UI card surface with a soft accent edge), or "Glass" (translucent).</summary>
+    /// <summary>Visual style shared by both result cards - the word popup (Alt+Q) and the
+    /// "what is this?" card (Alt+E). "Minimal" (the default - WinUI-flavoured, plain and quiet),
+    /// "Fluent" (carries your Windows accent colour), or "Glass" (translucent, over a blur of
+    /// whatever is behind it).</summary>
     public string PopupVisualStyle { get; set; } = "Minimal";
-
-    /// <summary>When true, the popup extracts accent colors from the screen capture.</summary>
-    public bool AdaptiveThemeEnabled { get; set; } = true;
 
     /// <summary>True once the first-launch welcome flow has been completed (or skipped), so it
     /// never shows again after the first run.</summary>
@@ -128,6 +133,28 @@ public class AppSettings
     /// changed key discards verdicts that were only ever true of the old one. Never the key
     /// itself - settings.json is plaintext (every real key lives DPAPI-encrypted in keys.dat).</summary>
     public string? ModelHealthKeyFingerprint { get; set; }
+
+    // ── "What is this?" card (Alt+E) ──
+
+    /// <summary>How much of the encyclopedia article the card shows: "Short" (a line or two),
+    /// "Standard" (the default - roughly the opening sentences) or "Full" (the whole opening
+    /// paragraph). Only ever a trim of the summary that was already fetched, so a longer answer
+    /// costs nothing but height - except that a longer answer is also a longer translation.</summary>
+    public string ExplainAnswerLength { get; set; } = "Standard";
+
+    /// <summary>Translate the answer into <see cref="TargetLanguage"/>. Turning this off skips the
+    /// translation request entirely, which is most of what Alt+E spends its time on - worth having
+    /// for anyone who only wants to know what the name refers to.</summary>
+    public bool ExplainTranslateAnswer { get; set; } = true;
+
+    /// <summary>Keep the original-language summary above the translation. With this off, a
+    /// translated answer replaces the original instead of sitting under it - the same choice the
+    /// region overlay offers with <see cref="RegionShowOriginal"/>, in the opposite default,
+    /// because here the original is the article you asked for rather than OCR output.</summary>
+    public bool ExplainShowOriginal { get; set; } = true;
+
+    /// <summary>Show the "Read more" button that opens the Wikipedia/Wikidata page.</summary>
+    public bool ExplainShowSourceLink { get; set; } = true;
 
     // ── Overlays ──
 

@@ -16,17 +16,16 @@ namespace Tarjem.Views;
 /// have actually done with the app, which is both more honest and more affecting than a generic
 /// plea.
 ///
-/// While no payment link is configured (<see cref="DonationUrl"/> empty), the donate button
-/// doesn't appear at all - a button that goes nowhere is worse than no button.
+/// While no payment link is configured (<see cref="DonationUrl"/> empty), the donate button is
+/// shown disabled with a line saying why, rather than being live and going nowhere.
 /// </summary>
 public partial class SupportWindow : Wpf.Ui.Controls.FluentWindow
 {
-    /// <summary>Set this to the real donation link when there is one. Empty hides the entire
-    /// donate section, leaving the window as a thank-you plus the non-monetary asks.</summary>
+    /// <summary>Set this to the real donation link when there is one. Empty leaves the donate
+    /// button disabled and says so underneath it.</summary>
     private const string DonationUrl = "";
 
     private const string ProjectUrl = "https://github.com/IdleBuilt/Tarjem";
-    private const string IssuesUrl = "https://github.com/IdleBuilt/Tarjem/issues";
 
     private static readonly IEasingFunction EaseOut = new CubicEase { EasingMode = EasingMode.EaseOut };
 
@@ -43,7 +42,12 @@ public partial class SupportWindow : Wpf.Ui.Controls.FluentWindow
         ThanksBody.Text = BuildThanksMessage();
 
         var hasDonationLink = !string.IsNullOrWhiteSpace(DonationUrl);
-        DonatePanel.Visibility = hasDonationLink ? Visibility.Visible : Visibility.Collapsed;
+
+        DonateButton.IsEnabled = hasDonationLink;
+        DonateNote.Text = hasDonationLink
+            ? "Opens in your browser. Any amount, once - never a subscription."
+            : "Payment methods aren't available right now.";
+
         OtherWaysHeader.Text = hasDonationLink ? "Other ways to help" : "If you'd like to help";
 
         var duration = new Duration(TimeSpan.FromMilliseconds(220));
@@ -88,7 +92,6 @@ public partial class SupportWindow : Wpf.Ui.Controls.FluentWindow
 
     private void DonateButton_Click(object sender, RoutedEventArgs e) => OpenUrl(DonationUrl);
     private void StarButton_Click(object sender, RoutedEventArgs e) => OpenUrl(ProjectUrl);
-    private void FeedbackButton_Click(object sender, RoutedEventArgs e) => OpenUrl(IssuesUrl);
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 

@@ -122,6 +122,17 @@ public static class OcrSpellCorrector
     };
 
     /// <summary>
+    /// How much shorter or longer a candidate may be than the token.
+    ///
+    /// Distance alone does not capture this: three dropped letters and three swapped letters cost
+    /// the same, but only one of them is something OCR does. Misreading substitutes glyphs of
+    /// similar shape - it does not cleanly delete a word's last three characters. So "governorate"
+    /// sat exactly on the distance limit from "governor" and was "corrected" into it, which is a
+    /// different word, correctly read, silently replaced.
+    /// </summary>
+    public static int MaxLengthDifferenceFor(int length) => length <= 6 ? 1 : 2;
+
+    /// <summary>
     /// Best correction for <paramref name="token"/>, or null to keep it as-is.
     ///
     /// <paramref name="contextWords"/> - the other words OCR read on the same line - are tried
@@ -130,6 +141,12 @@ public static class OcrSpellCorrector
     /// </summary>
     public static string? Correct(string token, IEnumerable<string>? contextWords = null)
     {
+        // Before anything else, because normalization is lossy in a way that manufactures wrong
+        // answers: it drops digits, so "wor1d" arrives here as "word" and "5tone" as "tone" -
+        // both real words, neither the one on screen, and no later step can tell.
+        var digitsResolved = ResolveDigitGlyphs(token);
+        if (digitsResolved != null) return digitsResolved;
+
         var clean = EnglishWordList.Normalize(token ?? "");
         if (clean.Length == 0) return null;
 
@@ -139,19 +156,97 @@ public static class OcrSpellCorrector
         var limit = MaxDistanceFor(clean.Length);
         if (limit <= 0) return null;
 
+        var lengthLimit = MaxLengthDifferenceFor(clean.Length);
+
         // 1. Words visible on the same line.
         if (contextWords != null)
         {
-            var fromContext = BestCandidate(clean, contextWords.Select(EnglishWordList.Normalize), limit);
+            var fromContext = BestCandidate(clean, contextWords.Select(EnglishWordList.Normalize), limit, lengthLimit);
             if (fromContext != null) return fromContext;
         }
 
         // 2. The frequency list, narrowed by length so this stays a scan of a few thousand
         //    candidates rather than all 47,000.
         var candidates = EnglishWordList.ByFrequency
-            .Where(w => Math.Abs(w.Length - clean.Length) <= limit);
+            .Where(w => Math.Abs(w.Length - clean.Length) <= lengthLimit);
 
-        return BestCandidate(clean, candidates, limit);
+        return BestCandidate(clean, candidates, limit, lengthLimit);
+    }
+
+    /// <summary>Digits OCR produces for letters at screen resolution, and what they were.</summary>
+    private static readonly Dictionary<char, char[]> DigitGlyphs = new()
+    {
+        ['0'] = ['o'],
+        ['1'] = ['l', 'i'],
+        ['5'] = ['s'],
+        ['6'] = ['b'],
+        ['9'] = ['g'],
+        ['8'] = ['b'],
+    };
+
+    /// <summary>
+    /// Reads a token whose letters OCR rendered as digits - "wor1d", "5tone", "b00k".
+    ///
+    /// This has to run before normalization rather than as one more candidate afterwards, because
+    /// normalization deletes digits outright: by the time the rest of this class sees "wor1d" it is
+    /// the string "word", which is in the frequency list, so every downstream check happily agrees
+    /// the token was read perfectly. The word on screen was "world".
+    ///
+    /// A trailing digit is never touched: "covid19", "version2", a page number and a footnote
+    /// marker all end in real digits. A leading one is allowed only for a single digit in a longer
+    /// token ("5tone"), which keeps "3d", "2nd", "9am" and every ordinal intact.
+    /// </summary>
+    private static string? ResolveDigitGlyphs(string? token)
+    {
+        if (string.IsNullOrEmpty(token)) return null;
+
+        var letters = token.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray();
+        if (letters.Length < 3) return null;
+
+        var digits = 0;
+        for (var i = 0; i < letters.Length; i++)
+        {
+            if (!char.IsDigit(letters[i])) continue;
+            if (!DigitGlyphs.ContainsKey(letters[i])) return null;
+
+            if (i == letters.Length - 1) return null;
+            if (i == 0 && letters.Length < 4) return null;
+
+            digits++;
+        }
+
+        // Never a token that is mostly digits - that is a number, not a misread word. A leading
+        // digit additionally has to be the only one.
+        if (digits == 0 || digits * 2 > letters.Length) return null;
+        if (char.IsDigit(letters[0]) && digits > 1) return null;
+
+        // Every combination of readings, which is at most a handful: two digits with two
+        // candidates each is four strings.
+        var candidates = new List<string> { "" };
+        foreach (var c in letters)
+        {
+            var readings = char.IsDigit(c) ? DigitGlyphs[c] : [c];
+            candidates = candidates.SelectMany(prefix => readings.Select(r => prefix + r)).ToList();
+        }
+
+        // The commonest real word among them. A tie is impossible to get wrong here in the way it
+        // is elsewhere: every candidate differs only in a glyph OCR is known to confuse.
+        string? best = null;
+        var bestRank = int.MaxValue;
+
+        foreach (var candidate in candidates)
+        {
+            if (!EnglishWordList.IsRealWord(candidate)) continue;
+
+            var rank = EnglishWordList.Rank(candidate);
+            if (rank < 0) rank = int.MaxValue - 1;
+            if (rank >= bestRank) continue;
+
+            best = candidate;
+            bestRank = rank;
+        }
+
+        return best;
     }
 
     /// <summary>
@@ -162,7 +257,7 @@ public static class OcrSpellCorrector
     /// candidate is *decisively* more common than the other - a word people actually read beats a
     /// rare one at equal distance - and is otherwise abandoned.
     /// </summary>
-    private static string? BestCandidate(string token, IEnumerable<string> candidates, double limit)
+    private static string? BestCandidate(string token, IEnumerable<string> candidates, double limit, int lengthLimit)
     {
         string? best = null;
         var bestDistance = double.MaxValue;
@@ -173,6 +268,7 @@ public static class OcrSpellCorrector
         foreach (var candidate in candidates)
         {
             if (candidate.Length == 0 || candidate == token) continue;
+            if (Math.Abs(candidate.Length - token.Length) > lengthLimit) continue;
 
             var distance = Distance(token, candidate);
             if (distance > limit) continue;

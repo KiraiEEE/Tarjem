@@ -1,4 +1,3 @@
-using System.Drawing;
 using System.Windows;
 using Tarjem.Models;
 using Tarjem.Views;
@@ -48,30 +47,18 @@ public class OverlayService
         _overlay.ShowDim(Settings.DimBehindOverlays);
     }
 
-    public void ShowTranslationPopup(WpfRect wordRectPhysical, TranslationResult result, Bitmap? screenshot = null)
+    public void ShowTranslationPopup(WpfRect wordRectPhysical, TranslationResult result)
     {
         HidePopup();
+
+        // Taken before the popup exists, so the Glass blur can never photograph the popup itself.
+        var backdrop = CaptureBackdropIfGlass(wordRectPhysical);
 
         var popup = new PopupWindow { Options = Settings };
         _popup = popup;
 
-        // Apply theme from screenshot if adaptive is enabled
-        if (Settings.AdaptiveThemeEnabled && screenshot != null)
-        {
-            try
-            {
-                var theme = ColorExtractionService.ExtractFromBitmap(screenshot);
-                popup.ApplyGameTheme(theme, Settings.PopupVisualStyle);
-            }
-            catch
-            {
-                // Fall back to default theme on any extraction error
-            }
-        }
-        else
-        {
-            popup.ApplyGameTheme(PopupTheme.Default(true), Settings.PopupVisualStyle);
-        }
+        popup.ApplyStyle(Settings.PopupVisualStyle, backdrop);
+        popup.TextCopied += (_, text) => TextCopied?.Invoke(this, text);
 
         // Reflect the source that actually answered, which after a failover is not the one in
         // Settings at all - the dropdown must not credit a provider that was down at the time.
@@ -98,8 +85,16 @@ public class OverlayService
         popup.UpdateLayout();
 
         PositionPopup(popup, wordRectPhysical);
+        popup.RefreshBackdrop();
         popup.AnimateIn();
     }
+
+    /// <summary>Only the Glass style has any use for a screen snapshot, and it costs a full-monitor
+    /// capture, so the other two never pay for it.</summary>
+    private ScreenBackdrop? CaptureBackdropIfGlass(WpfRect anchorPhysical) =>
+        CardStyler.Normalize(Settings.PopupVisualStyle) == CardStyler.Glass
+            ? ScreenBackdrop.CaptureMonitorFor(anchorPhysical)
+            : null;
 
     /// <summary>
     /// Places the popup just above the word, flipping below it when there isn't room, and keeps it
@@ -156,15 +151,34 @@ public class OverlayService
     {
         HideExplain();
 
-        var explain = new ExplainWindow();
+        var backdrop = CaptureBackdropIfGlass(wordRectPhysical);
+
+        var explain = new ExplainWindow { Options = Settings };
         _explain = explain;
 
+        explain.ApplyStyle(Settings.PopupVisualStyle, backdrop);
         explain.TextCopied += (_, text) => TextCopied?.Invoke(this, text);
+
+        // The card's own source switcher. Deliberately no failover - the user picked that source,
+        // and answering from a different one would make the switcher lie about where the answer
+        // came from.
+        explain.SourceRequested = providerId =>
+            _translationService.ExplainWithProviderAsync(providerId, word, Settings.SourceLanguage);
+
+        // The card changes size when the switcher swaps its content, so it has to be re-placed
+        // and the Glass blur re-registered with whatever is now behind it.
+        explain.Repositioned += (_, _) =>
+        {
+            PositionNearWord(explain, wordRectPhysical);
+            explain.RefreshBackdrop();
+        };
+
         explain.ShowLoading(word);
         explain.Show();
         explain.UpdateLayout();
 
         PositionNearWord(explain, wordRectPhysical);
+        explain.RefreshBackdrop();
         explain.AnimateIn();
 
         return explain;
@@ -181,6 +195,10 @@ public class OverlayService
             explain.SetResult(result);
             explain.UpdateLayout();
             PositionNearWord(explain, wordRectPhysical);
+
+            // Last, because the card has just changed both size and position and the Glass blur is
+            // only convincing while it stays registered with the screen underneath it.
+            explain.RefreshBackdrop();
         });
     }
 

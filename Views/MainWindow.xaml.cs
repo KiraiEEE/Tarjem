@@ -82,6 +82,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         ApiList.ItemsSource = ExternalApis;
         AboutVersionText.Text = $"Version {UpdateService.CurrentVersion}";
 
+        // Once, here rather than in LoadApiKeyBoxes, which "Clear all data" calls again.
+        foreach (var box in new[] { ApiKeyBox, GroqApiKeyBox, CerebrasApiKeyBox, MerriamWebsterApiKeyBox })
+            MakePasteOnly(box);
+
         _binder = new SettingsBinder(_settings);
         _binder.Changed += (_, _) => OnBoundSettingChanged();
 
@@ -113,7 +117,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void BindSimpleSettings()
     {
         _binder.Bind(StartMinimizedToggle, s => s.StartMinimized, (s, v) => s.StartMinimized = v);
-        _binder.Bind(AdaptiveThemeToggle, s => s.AdaptiveThemeEnabled, (s, v) => s.AdaptiveThemeEnabled = v);
         _binder.Bind(RegionShowOriginalToggle, s => s.RegionShowOriginal, (s, v) => s.RegionShowOriginal = v);
         _binder.Bind(DimBehindOverlaysToggle, s => s.DimBehindOverlays, (s, v) => s.DimBehindOverlays = v);
         _binder.Bind(ShowInlineWordTranslationToggle, s => s.ShowInlineWordTranslation, (s, v) => s.ShowInlineWordTranslation = v);
@@ -129,11 +132,33 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _binder.Bind(PopupStyleComboBox, s => s.PopupVisualStyle, (s, v) => s.PopupVisualStyle = v);
         _binder.Bind(RegionFontSizeModeCombo, s => s.RegionFontSizeMode, (s, v) => s.RegionFontSizeMode = v);
 
-        // These two carry extra behaviour beyond storing a value, so they keep their own handlers
+        _binder.Bind(ExplainAnswerLengthCombo, s => s.ExplainAnswerLength, (s, v) => s.ExplainAnswerLength = v);
+        _binder.Bind(ExplainShowOriginalToggle, s => s.ExplainShowOriginal, (s, v) => s.ExplainShowOriginal = v);
+        _binder.Bind(ExplainShowSourceLinkToggle, s => s.ExplainShowSourceLink, (s, v) => s.ExplainShowSourceLink = v);
+
+        // These carry extra behaviour beyond storing a value, so they keep their own handlers
         // (declared in XAML) rather than being bound here.
         HistoryEnabledToggle.IsChecked = _settings.Current.HistoryEnabled;
         ShowTranslationSectionToggle.IsChecked = _settings.Current.ShowTranslationSection;
         ShowDictionarySectionToggle.IsChecked = _settings.Current.ShowDictionarySection;
+        ExplainTranslateAnswerToggle.IsChecked = _settings.Current.ExplainTranslateAnswer;
+        ApplyExplainOptionAvailability();
+    }
+
+    /// <summary>"Keep the original above the translation" has nothing to choose between when there
+    /// is no translation being fetched, so it greys out rather than sitting there implying the
+    /// card has two halves.</summary>
+    private void ApplyExplainOptionAvailability() =>
+        ExplainShowOriginalCard.IsEnabled = ExplainTranslateAnswerToggle.IsChecked == true;
+
+    private void ExplainTranslateAnswerToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        ApplyExplainOptionAvailability();
+
+        if (_isLoading || _binder.IsLoading) return;
+
+        _settings.Current.ExplainTranslateAnswer = ExplainTranslateAnswerToggle.IsChecked == true;
+        _settings.Save();
     }
 
     /// <summary>Runs after any bound setting is saved. Theme is applied immediately so the picker
@@ -147,7 +172,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var s = _settings.Current;
 
         StartMinimizedToggle.IsChecked = s.StartMinimized;
-        AdaptiveThemeToggle.IsChecked = s.AdaptiveThemeEnabled;
         RegionShowOriginalToggle.IsChecked = s.RegionShowOriginal;
         DimBehindOverlaysToggle.IsChecked = s.DimBehindOverlays;
         ShowInlineWordTranslationToggle.IsChecked = s.ShowInlineWordTranslation;
@@ -159,10 +183,15 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         HistoryEnabledToggle.IsChecked = s.HistoryEnabled;
         ShowTranslationSectionToggle.IsChecked = s.ShowTranslationSection;
         ShowDictionarySectionToggle.IsChecked = s.ShowDictionarySection;
+        ExplainTranslateAnswerToggle.IsChecked = s.ExplainTranslateAnswer;
+        ExplainShowOriginalToggle.IsChecked = s.ExplainShowOriginal;
+        ExplainShowSourceLinkToggle.IsChecked = s.ExplainShowSourceLink;
+        ApplyExplainOptionAvailability();
 
         SettingsBinder.Select(ThemeCombo, s.Theme);
         SettingsBinder.Select(PopupStyleComboBox, s.PopupVisualStyle);
         SettingsBinder.Select(RegionFontSizeModeCombo, s.RegionFontSizeMode);
+        SettingsBinder.Select(ExplainAnswerLengthCombo, s.ExplainAnswerLength);
     }
 
     /// <summary>Called by the app when the startup update check finds something. Doing this as a
@@ -218,11 +247,33 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     /// it ends up pasted into a screenshot.</summary>
     private void LoadApiKeyBoxes()
     {
-        ApiKeyBox.Text = SecureKeyService.GetUserKey(SecureKeyService.Gemini) ?? "";
-        GroqApiKeyBox.Text = SecureKeyService.GetUserKey(SecureKeyService.Groq) ?? "";
-        CerebrasApiKeyBox.Text = SecureKeyService.GetUserKey(SecureKeyService.Cerebras) ?? "";
-        MerriamWebsterApiKeyBox.Text = SecureKeyService.GetUserKey(SecureKeyService.MerriamWebster) ?? "";
-        UpdateSharedKeyNotes();
+        ApiKeyBox.Password = SecureKeyService.GetUserKey(SecureKeyService.Gemini) ?? "";
+        GroqApiKeyBox.Password = SecureKeyService.GetUserKey(SecureKeyService.Groq) ?? "";
+        CerebrasApiKeyBox.Password = SecureKeyService.GetUserKey(SecureKeyService.Cerebras) ?? "";
+        MerriamWebsterApiKeyBox.Password = SecureKeyService.GetUserKey(SecureKeyService.MerriamWebster) ?? "";
+        UpdateKeyStatusRows();
+    }
+
+    /// <summary>
+    /// Lets a key be pasted in but never taken back out.
+    ///
+    /// The masking alone already means Copy would only ever yield a string of dots, but a key box
+    /// that quietly hands you something when you press Ctrl+C is worse than one that plainly does
+    /// nothing: the dots look enough like a key to end up pasted into a support thread. Cut is
+    /// blocked for the same reason, and because "cut" on a stored credential is a delete with a
+    /// confusing name.
+    /// </summary>
+    private static void MakePasteOnly(Control box)
+    {
+        CommandManager.AddPreviewExecutedHandler(box, (_, e) =>
+        {
+            if (e.Command == ApplicationCommands.Copy || e.Command == ApplicationCommands.Cut)
+                e.Handled = true;
+        });
+
+        // Right-click would otherwise offer Copy and Cut back regardless of the handler above.
+        // Suppressed rather than replaced with an empty menu, which would still flash one open.
+        box.ContextMenuOpening += (_, e) => e.Handled = true;
     }
 
     /// <summary>Restores the last size, clamped to the monitor it will actually open on so a
@@ -507,17 +558,17 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
     }
 
-    private void ApiKeyBox_TextChanged(object sender, TextChangedEventArgs e) =>
-        QueueKeySave(SecureKeyService.Gemini, ApiKeyBox.Text);
+    private void ApiKeyBox_PasswordChanged(object sender, RoutedEventArgs e) =>
+        QueueKeySave(SecureKeyService.Gemini, ApiKeyBox.Password);
 
-    private void GroqApiKeyBox_TextChanged(object sender, TextChangedEventArgs e) =>
-        QueueKeySave(SecureKeyService.Groq, GroqApiKeyBox.Text);
+    private void GroqApiKeyBox_PasswordChanged(object sender, RoutedEventArgs e) =>
+        QueueKeySave(SecureKeyService.Groq, GroqApiKeyBox.Password);
 
-    private void CerebrasApiKeyBox_TextChanged(object sender, TextChangedEventArgs e) =>
-        QueueKeySave(SecureKeyService.Cerebras, CerebrasApiKeyBox.Text);
+    private void CerebrasApiKeyBox_PasswordChanged(object sender, RoutedEventArgs e) =>
+        QueueKeySave(SecureKeyService.Cerebras, CerebrasApiKeyBox.Password);
 
-    private void MerriamWebsterApiKeyBox_TextChanged(object sender, TextChangedEventArgs e) =>
-        QueueKeySave(SecureKeyService.MerriamWebster, MerriamWebsterApiKeyBox.Text);
+    private void MerriamWebsterApiKeyBox_PasswordChanged(object sender, RoutedEventArgs e) =>
+        QueueKeySave(SecureKeyService.MerriamWebster, MerriamWebsterApiKeyBox.Password);
 
     private readonly Dictionary<string, string?> _pendingKeys = new();
     private DispatcherTimer? _keySaveTimer;
@@ -559,7 +610,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _pendingKeys.Clear();
         _translation.RefreshKeys();
-        UpdateSharedKeyNotes();
+        UpdateKeyStatusRows();
     }
 
     /// <summary>
@@ -567,33 +618,29 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     /// key box that silently accepts anything is the worst version of this: a typo looks exactly
     /// like a working key until a lookup quietly falls back to something else.
     /// </summary>
-    private void UpdateSharedKeyNotes()
+    private void UpdateKeyStatusRows()
     {
-        Apply(GeminiSharedKeyNote, "gemini");
-        Apply(GroqSharedKeyNote, "groq");
-        Apply(CerebrasSharedKeyNote, "cerebras");
-        Apply(MerriamWebsterSharedKeyNote, "merriam-webster");
+        Apply(GeminiKeyStatus, "gemini");
+        Apply(GroqKeyStatus, "groq");
+        Apply(CerebrasKeyStatus, "cerebras");
+        Apply(MerriamWebsterKeyStatus, "merriam-webster");
 
-        void Apply(TextBlock note, string providerId)
+        void Apply(KeyStatusRow status, string providerId)
         {
-            note.Visibility = Visibility.Visible;
-            note.ClearValue(ForegroundProperty);
-
             if (_translation.IsUsingOwnKey(providerId))
             {
-                note.Text = "Using your own key.";
-                _ = VerifyKeyAsync(note, providerId);
+                status.ShowChecking();
+                _ = VerifyKeyAsync(status, providerId);
                 return;
             }
 
             if (!string.IsNullOrWhiteSpace(_translation.ResolveKey(providerId)))
             {
-                note.Text = "Using the key Tarjem ships with — shared by every install, so add your own if this feels slow.";
+                status.ShowMessage("Using the key Tarjem ships with — shared by every install, so add your own if this feels slow.");
                 return;
             }
 
-            note.Text = "No key, so this source isn't offered. Paste one above to enable it.";
-            note.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
+            status.ShowMessage("No key, so this source isn't offered. Paste one above to enable it.", warn: true);
         }
     }
 
@@ -603,12 +650,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     /// <summary>Sends one real request with the key the user just entered and reports back on the
     /// same line, so "did that work?" is answered without them having to go and try a lookup.</summary>
-    private async Task VerifyKeyAsync(TextBlock note, string providerId)
+    private async Task VerifyKeyAsync(KeyStatusRow status, string providerId)
     {
         var generation = _keyProbeGeneration.TryGetValue(providerId, out var g) ? g + 1 : 1;
         _keyProbeGeneration[providerId] = generation;
 
-        note.Text = "Using your own key — checking…";
+        status.ShowChecking();
 
         var kind = providerId == "merriam-webster" || providerId == "gemini"
             ? ProviderKind.Dictionary
@@ -629,15 +676,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (!_translation.IsUsingOwnKey(providerId)) return;
 
         if (probe.Success)
-        {
-            note.Text = $"✓  Your key works — answered in {probe.LatencyMs} ms.";
-            note.Foreground = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
-        }
+            status.ShowVerified(probe.LatencyMs);
         else
-        {
-            note.Text = $"✕  Your key didn't work: {probe.Message}";
-            note.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
-        }
+            status.ShowInvalid();
     }
 
     /// <summary>
@@ -685,33 +726,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _ = ProbeSelectedProviderAsync(
             ProviderKind.Translation, DefaultTranslationProviderCombo, TranslationProbeButton, TranslationProbeDot);
 
-    /// <summary>Wikipedia has no picker of its own (it's the only encyclopedia source), so it gets
-    /// a bare probe button rather than going through <see cref="ProbeSelectedProviderAsync"/>.
-    /// Without this the ProviderKind.Encyclopedia branch of TestProviderAsync was unreachable.</summary>
-    private async void EncyclopediaProbeButton_Click(object sender, RoutedEventArgs e)
-    {
-        EncyclopediaProbeButton.IsEnabled = false;
-        EncyclopediaProbeDot.Background = new SolidColorBrush(ProbeColorNeutral);
-        ShowProbeMessage("Checking Wikipedia…");
-
-        try
-        {
-            var probe = await _translation.TestProviderAsync(ProviderKind.Encyclopedia, "wikipedia");
-            EncyclopediaProbeDot.Background = new SolidColorBrush(probe.Success ? ProbeColorOk : ProbeColorBad);
-            ShowProbeMessage(probe.Success
-                ? $"Wikipedia answered in {probe.LatencyMs} ms."
-                : $"Wikipedia: {probe.Message}");
-        }
-        catch (Exception ex)
-        {
-            EncyclopediaProbeDot.Background = new SolidColorBrush(ProbeColorBad);
-            ShowProbeMessage($"Wikipedia: {ex.Message}");
-        }
-        finally
-        {
-            EncyclopediaProbeButton.IsEnabled = true;
-        }
-    }
+    private void EncyclopediaProbeButton_Click(object sender, RoutedEventArgs e) =>
+        _ = ProbeSelectedProviderAsync(
+            ProviderKind.Encyclopedia, DefaultEncyclopediaProviderCombo, EncyclopediaProbeButton, EncyclopediaProbeDot);
 
     /// <summary>
     /// Sends one real request to whichever source is selected beside this dot and reports what
@@ -931,6 +948,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         PopulateProviderCombo(DefaultDictionaryProviderCombo, TranslationService.DictionaryProviders, _settings.Current.DefaultDictionaryProvider);
         PopulateProviderCombo(DefaultTranslationProviderCombo, TranslationService.TranslationProviders, _settings.Current.DefaultTranslationProvider);
+        PopulateProviderCombo(DefaultEncyclopediaProviderCombo, TranslationService.EncyclopediaProviders, _settings.Current.DefaultEncyclopediaProvider);
+        UpdateEncyclopediaProviderNote();
 
         TargetLanguageCombo.ItemsSource = LanguageFlags.Targets();
         SelectLanguage(TargetLanguageCombo, _settings.Current.TargetLanguage);
@@ -975,6 +994,36 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _settings.Current.DefaultTranslationProvider = id;
             _settings.Save();
         }
+    }
+
+    private void DefaultEncyclopediaProviderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateEncyclopediaProviderNote();
+
+        if (_isLoading) return;
+        if (DefaultEncyclopediaProviderCombo.SelectedItem is ComboBoxItem item && item.Tag is string id)
+        {
+            _settings.Current.DefaultEncyclopediaProvider = id;
+            _settings.Save();
+        }
+    }
+
+    /// <summary>
+    /// Says out loud what picking an AI source here actually means. The wikis and the models look
+    /// like peers in a dropdown and are not: one returns a page you can go and read, the other
+    /// returns a recollection. Someone choosing the second should be told that once, here, rather
+    /// than discovering it from a confidently wrong card.
+    /// </summary>
+    private void UpdateEncyclopediaProviderNote()
+    {
+        var id = (DefaultEncyclopediaProviderCombo.SelectedItem as ComboBoxItem)?.Tag as string;
+
+        EncyclopediaProviderNoteText.Text = id is "gemini" or "groq" or "cerebras"
+            ? "AI sources answer from the model's memory, not from a page, so there is no \"Read more\" link and an answer can be wrong. They're asked to say when they don't recognize a name rather than guess, and Tarjem still tries Wikipedia and Wikidata if this one declines."
+            : "";
+
+        EncyclopediaProviderNoteText.Visibility =
+            string.IsNullOrEmpty(EncyclopediaProviderNoteText.Text) ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void TargetLanguageCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

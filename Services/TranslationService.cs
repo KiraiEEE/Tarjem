@@ -38,6 +38,9 @@ public class TranslationService
     public static (string Id, string Label)[] TranslationProviders =>
         ProviderCatalog.OfKind(ProviderKind.Translation).OrderBy(p => p.Rank).Select(p => (p.Id, p.Label)).ToArray();
 
+    public static (string Id, string Label)[] EncyclopediaProviders =>
+        ProviderCatalog.OfKind(ProviderKind.Encyclopedia).OrderBy(p => p.Rank).Select(p => (p.Id, p.Label)).ToArray();
+
     /// <summary>Languages the translation section can target. IsRtl drives the popup's text
     /// flow direction for whichever language is currently selected.
     ///
@@ -172,7 +175,11 @@ public class TranslationService
     /// than the whole result. Sections the user has switched off in Settings are not requested at
     /// all - not requested and hidden, so turning off a section actually makes lookups faster.
     /// </summary>
-    public async Task<TranslationResult> TranslateWord(string word, string fullSentence, string sourceLanguageCode, CancellationToken ct = default)
+    /// <param name="asRead">What OCR actually read, when spelling correction changed it. The
+    /// dictionary gets asked about this spelling first - see
+    /// <see cref="ResolveSpellingAsync"/> for why that decision does not belong in the corrector.</param>
+    public async Task<TranslationResult> TranslateWord(
+        string word, string fullSentence, string sourceLanguageCode, CancellationToken ct = default, string? asRead = null)
     {
         var settings = _settingsService.Current;
         var (sourceLangCode, sourceLangName) = GetSourceLanguage(sourceLanguageCode);
@@ -182,6 +189,14 @@ public class TranslationService
         // every provider below treats "no sentence" as a valid mode rather than an error.
         var sentence = fullSentence ?? "";
 
+        // Settle which spelling we are answering about before anything is dispatched, so the
+        // definition, the translation, the headword and the history entry are all about the
+        // same word.
+        var confirmed = await ResolveSpellingAsync(
+            word, asRead, sourceLangCode, sourceLangName, targetLangCode, targetLangName, sentence, ct);
+
+        word = confirmed.Word;
+
         var result = new TranslationResult
         {
             OriginalWord = word,
@@ -190,9 +205,9 @@ public class TranslationService
             FullSentence = sentence,
         };
 
-        var dictionaryTask = settings.ShowDictionarySection
-            ? LookupDictionaryWithFailoverAsync(settings.DefaultDictionaryProvider, word, sourceLangCode, sourceLangName, targetLangCode, targetLangName, sentence, ct)
-            : Task.FromResult<DictionaryOutcome?>(null);
+        var dictionaryTask = !settings.ShowDictionarySection ? Task.FromResult<DictionaryOutcome?>(null)
+            : confirmed.Definition != null ? Task.FromResult<DictionaryOutcome?>(confirmed.Definition)
+            : LookupDictionaryWithFailoverAsync(settings.DefaultDictionaryProvider, word, sourceLangCode, sourceLangName, targetLangCode, targetLangName, sentence, ct);
 
         // Now that English is a valid target, source and target can legitimately be the same
         // language. Translating a word into the language it's already in would walk the entire
@@ -252,6 +267,112 @@ public class TranslationService
         return result;
     }
 
+    /// <summary>
+    /// One named encyclopedia source, no failover - the Alt+E card's own source switcher.
+    ///
+    /// No failover for the same reason the word popup's switcher has none: the user picked that
+    /// source specifically, and quietly answering from a different one would make the switcher
+    /// lie about where the answer came from.
+    /// </summary>
+    public async Task<TranslationResult?> ExplainWithProviderAsync(
+        string providerId, string term, string sourceLanguageCode, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(term)) return null;
+
+        var settings = _settingsService.Current;
+        var (sourceCode, _) = GetSourceLanguage(sourceLanguageCode);
+        var (targetCode, _) = GetTargetLanguage();
+
+        EncyclopediaEntry? entry;
+        try
+        {
+            entry = await LookupOneEncyclopediaAsync(
+                providerId, term, sourceCode,
+                EncyclopediaService.SummaryLengthFor(settings.ExplainAnswerLength), ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Encyclopedia source {Provider} threw for {Term}", providerId, term);
+            return null;
+        }
+
+        if (entry == null) return null;
+
+        var result = new TranslationResult
+        {
+            OriginalWord = entry.Title,
+            Meanings = [entry.Summary],
+            PartOfSpeech = entry.Description ?? "",
+            SourceLanguage = sourceCode,
+            TargetLanguage = targetCode,
+            IsEncyclopedic = true,
+            DefinitionProvider = providerId,
+            SourceUrl = entry.SourceUrl,
+            FullSentence = entry.Summary,
+        };
+
+        if (settings.ExplainTranslateAnswer &&
+            !string.Equals(sourceCode, targetCode, StringComparison.OrdinalIgnoreCase))
+        {
+            var translated = await TranslateTextWithFailoverAsync(
+                settings.DefaultTranslationProvider, entry.Summary, sourceCode, ct);
+
+            if (!string.IsNullOrWhiteSpace(translated))
+            {
+                result.TranslatedSentence = translated;
+                result.TranslationProvider = settings.DefaultTranslationProvider;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>Which spelling the lookup is about, and the definition that settled it.</summary>
+    private readonly record struct ConfirmedSpelling(string Word, DictionaryOutcome? Definition);
+
+    /// <summary>
+    /// Decides between what OCR read and what spelling correction proposed, by asking the source
+    /// that actually knows.
+    ///
+    /// The corrector has to answer "is this a real word?" from a 47,000-word frequency list, and
+    /// that list is confidently wrong about a great many real words - English derives freely, so
+    /// "governorate" is missing from it while "governor" sits exactly at the edit limit, and the
+    /// correction looked like a repair rather than the silent substitution of a different word.
+    /// Extending the list, or bolting a table of English suffixes onto it, only moves that line;
+    /// it stays a list, and it stays English-only while the app reads eighteen languages.
+    ///
+    /// The dictionary about to be queried already knows every real word in all of them. So the
+    /// reading OCR produced is offered to it first, and a definition is taken as proof that OCR was
+    /// right - no list, no morphology, and it improves whenever the dictionaries do.
+    ///
+    /// Costs nothing in the case that matters: when OCR was right, this <em>is</em> the lookup, and
+    /// the correction is simply never pursued. Only a genuine misreading pays for the extra
+    /// request, and only when the corrector wanted to change something in the first place.
+    /// </summary>
+    private async Task<ConfirmedSpelling> ResolveSpellingAsync(
+        string corrected, string? asRead, string sourceCode, string sourceName,
+        string targetCode, string targetName, string sentence, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(asRead) ||
+            asRead.Equals(corrected, StringComparison.OrdinalIgnoreCase) ||
+            !_settingsService.Current.ShowDictionarySection)
+            return new ConfirmedSpelling(corrected, null);
+
+        var outcome = await LookupDictionaryWithFailoverAsync(
+            _settingsService.Current.DefaultDictionaryProvider, asRead,
+            sourceCode, sourceName, targetCode, targetName, sentence, ct);
+
+        // An encyclopedia answer does not count as confirmation. That fallback fires for anything
+        // that looks like a name, which is exactly what a mangled token looks like - taking it as
+        // proof would confirm every misreading that happens to start with a capital.
+        if (outcome is not { IsEncyclopedic: false, Meanings.Length: > 0 })
+            return new ConfirmedSpelling(corrected, null);
+
+        Log.Debug("Dictionary knows {AsRead}, so keeping it over the correction to {Corrected}", asRead, corrected);
+        return new ConfirmedSpelling(asRead, outcome);
+    }
+
     // ===================== The encyclopedia lookup (Alt+E) =====================
 
     /// <summary>
@@ -266,7 +387,8 @@ public class TranslationService
     ///
     /// The summary is also translated into the target language, because "NVIDIA is an American
     /// technology company" is not much use to someone who needed the translator in the first place.
-    /// Returns null when Wikipedia has no confident answer.
+    /// Returns null only when every source in
+    /// <see cref="LookupEncyclopediaWithFailoverAsync"/> came back empty.
     /// </summary>
     public async Task<TranslationResult?> ExplainAsync(string word, string sourceLanguageCode, CancellationToken ct = default)
     {
@@ -275,8 +397,16 @@ public class TranslationService
         var (sourceCode, _) = GetSourceLanguage(sourceLanguageCode);
         var (targetCode, _) = GetTargetLanguage();
 
-        var entry = await _encyclopedia.Value.LookupAsync(word, sourceCode, ct);
-        if (entry == null) return null;
+        var settings = _settingsService.Current;
+
+        var found = await LookupEncyclopediaWithFailoverAsync(
+            settings.DefaultEncyclopediaProvider, word, sourceCode,
+            EncyclopediaService.SummaryLengthFor(settings.ExplainAnswerLength),
+            mayReachUnchosenAiSources: true, ct);
+
+        if (found == null) return null;
+
+        var (providerId, entry) = found.Value;
 
         var result = new TranslationResult
         {
@@ -286,28 +416,126 @@ public class TranslationService
             SourceLanguage = sourceCode,
             TargetLanguage = targetCode,
             IsEncyclopedic = true,
-            DefinitionProvider = "wikipedia",
+            DefinitionProvider = providerId,
             SourceUrl = entry.SourceUrl,
             FullSentence = entry.Summary,
         };
 
-        // Same-language lookup needs no translation pass - the summary already is the answer.
-        if (!string.Equals(sourceCode, targetCode, StringComparison.OrdinalIgnoreCase))
+        // Same-language lookup needs no translation pass - the summary already is the answer - and
+        // neither does a user who turned the translation off, which is the single biggest thing
+        // Alt+E can be made to skip: the article is already in hand by this point, and everything
+        // after it is another network round trip.
+        if (settings.ExplainTranslateAnswer &&
+            !string.Equals(sourceCode, targetCode, StringComparison.OrdinalIgnoreCase))
         {
             var translated = await TranslateTextWithFailoverAsync(
-                _settingsService.Current.DefaultTranslationProvider, entry.Summary, sourceCode, ct);
+                settings.DefaultTranslationProvider, entry.Summary, sourceCode, ct);
 
             if (!string.IsNullOrWhiteSpace(translated))
             {
                 result.TranslatedSentence = translated;
-                result.TranslationProvider = _settingsService.Current.DefaultTranslationProvider;
+                result.TranslationProvider = settings.DefaultTranslationProvider;
             }
         }
 
         return result;
     }
 
+    /// <summary>
+    /// Walks the encyclopedia sources in order until one recognizes the name, and reports which one
+    /// did - the card credits the source that actually answered, which after a failover is not the
+    /// one in Settings.
+    ///
+    /// The chain matters more here than anywhere else in the app. The wikis are records: when they
+    /// answer they are citable, and when they don't it is because the entity genuinely has no page.
+    /// The AI sources behind them answer for the long tail that has no page at all, from memory
+    /// rather than from a record - which is why they sit last, and why they are asked to decline
+    /// rather than guess.
+    /// </summary>
+    /// <param name="mayReachUnchosenAiSources">False on the automatic path. Alt+Q's fallback fires
+    /// on every capitalized token no dictionary knew, which over a screen of OCR output is a great
+    /// many tokens that are not names at all - letting that walk into three model requests apiece
+    /// would spend a user's whole free tier on recognition errors. An explicit Alt+E press is worth
+    /// the requests; a speculative fallback is not, unless the user chose an AI source themselves.</param>
+    private async Task<(string ProviderId, EncyclopediaEntry Entry)?> LookupEncyclopediaWithFailoverAsync(
+        string? preferredId, string term, string sourceCode, int maxSummaryLength,
+        bool mayReachUnchosenAiSources, CancellationToken ct)
+    {
+        IEnumerable<ProviderDescriptor> chain =
+            ProviderCatalog.FailoverChain(ProviderKind.Encyclopedia, preferredId, sourceCode, HasKey);
+
+        if (!mayReachUnchosenAiSources)
+            chain = chain.Where(p => !p.RequiresKey || p.Id == preferredId);
+
+        foreach (var provider in chain)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                var entry = await LookupOneEncyclopediaAsync(provider.Id, term, sourceCode, maxSummaryLength, ct);
+                if (entry != null) return (provider.Id, entry);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Encyclopedia source {Provider} threw for {Term}", provider.Id, term);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>One source's answer. The wikis go through <see cref="EncyclopediaService"/>; the AI
+    /// sources are asked here, because this is where their clients and keys live.</summary>
+    private async Task<EncyclopediaEntry?> LookupOneEncyclopediaAsync(
+        string providerId, string term, string sourceCode, int maxSummaryLength, CancellationToken ct)
+    {
+        if (providerId is "wikipedia" or "wikidata")
+            return await _encyclopedia.Value.LookupAsync(providerId, term, sourceCode, maxSummaryLength, ct);
+
+        var (_, sourceName) = GetSourceLanguage(sourceCode);
+
+        var answer = providerId switch
+        {
+            "gemini" => await _gemini.Value.ExplainAsync(term, sourceName, ct),
+            "groq" => Groq() is { } groq ? await groq.ExplainAsync(term, sourceName, ct) : null,
+            "cerebras" => Cerebras() is { } cerebras ? await cerebras.ExplainAsync(term, sourceName, ct) : null,
+            _ => null,
+        };
+
+        if (answer == null) return null;
+
+        // No SourceUrl: there is no page to send the user to, and "Read more" pointing at a search
+        // result would be dressing a recollection up as a citation.
+        return new EncyclopediaEntry(
+            Title: string.IsNullOrWhiteSpace(answer.Title) ? term : answer.Title,
+            Summary: Trim(answer.Summary, maxSummaryLength),
+            Description: answer.Kind,
+            SourceUrl: "");
+    }
+
+    /// <summary>The AI sources answer at whatever length they feel like, so the "Answer length"
+    /// setting has to be applied to them here rather than being trusted to the prompt.</summary>
+    private static string Trim(string text, int maxLength)
+    {
+        var clean = text.Replace('\n', ' ').Trim();
+        if (clean.Length <= maxLength) return clean;
+
+        var cut = clean.LastIndexOf(". ", maxLength, StringComparison.Ordinal);
+        return cut > 60 ? clean[..(cut + 1)] : clean[..maxLength].TrimEnd() + "…";
+    }
+
     // ===================== Dictionary =====================
+
+    /// <summary>How many definitions the popup has room for.</summary>
+    private const int ShownMeanings = 3;
+
+    /// <summary>How many each parser collects before <see cref="Refine"/> trims them back. More
+    /// than are shown, because a source can lead with cross-references ("plural of mouse") that
+    /// are about to be demoted - collecting only what fits meant the real senses never made it
+    /// out of the parser to be preferred in the first place.</summary>
+    private const int CollectedMeanings = 10;
 
     /// <summary>One source's answer, plus which source it came from - the popup shows the
     /// provider that actually answered, which after a failover is not the one in Settings.</summary>
@@ -332,7 +560,9 @@ public class TranslationService
                 {
                     if (provider.Id != preferredId)
                         Log.Debug("Dictionary failover: {Preferred} did not answer for {Word}, {Actual} did", preferredId, word, provider.Id);
-                    return outcome;
+
+                    return await FollowCrossReferenceAsync(
+                        outcome, provider.Id, word, sourceCode, sourceName, targetCode, targetName, fullSentence, ct);
                 }
             }
             catch (OperationCanceledException) { throw; }
@@ -346,16 +576,82 @@ public class TranslationService
         // name - which is the difference between "no definition found" and a useful answer.
         if (_settingsService.Current.EncyclopediaFallbackEnabled && EncyclopediaService.LooksLikeAName(word))
         {
-            var entry = await _encyclopedia.Value.LookupAsync(word, sourceCode, ct);
-            if (entry != null)
+            // The Alt+Q fallback always uses the short form: it is a consolation line inside a
+            // dictionary popup, not the answer the user asked for. The length setting belongs to
+            // Alt+E, where the article *is* the answer.
+            var found = await LookupEncyclopediaWithFailoverAsync(
+                _settingsService.Current.DefaultEncyclopediaProvider, word, sourceCode,
+                EncyclopediaService.ShortSummaryLength,
+                mayReachUnchosenAiSources: false, ct);
+
+            if (found != null)
             {
+                var (providerId, entry) = found.Value;
                 return new DictionaryOutcome(
-                    "wikipedia", [entry.Summary], "", entry.Description ?? "", "", [],
+                    providerId, [entry.Summary], "", entry.Description ?? "", "", [],
                     IsEncyclopedic: true, SourceUrl: entry.SourceUrl);
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Trims a source's definitions to what the popup shows, putting the ones that actually define
+    /// something first.
+    ///
+    /// Sources list an inflected word's cross-reference ahead of its real senses - "mice" leads
+    /// with "plural of mouse" and only then gives the verb, "running" with "present participle of
+    /// run" before the adjective. Taking the first three therefore threw away every real sense the
+    /// source had and kept the pointer. When the pointers are all there is, they are kept: they
+    /// still say something true, and <see cref="FollowCrossReferenceAsync"/> is what replaces them.
+    /// </summary>
+    private static string[] Refine(string[] meanings)
+    {
+        var (real, references) = InflectionParser.Partition(meanings);
+
+        return (real.Count > 0 ? real : references)
+            .Take(ShownMeanings)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Turns "plural of revelation" into what revelation actually means.
+    ///
+    /// Wiktionary-derived sources - which the default dictionary is one of - give inflected words
+    /// their own entries containing nothing but a pointer to the base word. That is correct
+    /// lexicography and a useless answer: someone who hovered "revelations" because they did not
+    /// know it does not know "revelation" either. So the pointer is followed once, against the same
+    /// source, and the base word's real definition is shown under the word that was hovered.
+    ///
+    /// Once, not repeatedly: a second hop would be a dictionary loop waiting to happen, and no real
+    /// entry is two pointers deep. If the base word does not resolve, the original answer stands -
+    /// "plural of revelation" is at least true, and better than nothing at all.
+    /// </summary>
+    private async Task<DictionaryOutcome> FollowCrossReferenceAsync(
+        DictionaryOutcome outcome, string providerId, string word, string sourceCode, string sourceName,
+        string targetCode, string targetName, string fullSentence, CancellationToken ct)
+    {
+        var redirect = InflectionParser.RedirectFor(outcome.Meanings, word);
+        if (redirect == null) return outcome;
+
+        Log.Debug("{Word} is the {Label} of {Base}; looking that up instead", word, redirect.Label, redirect.BaseWord);
+
+        var resolved = await LookupOneDictionaryAsync(
+            providerId, redirect.BaseWord, sourceCode, sourceName, targetCode, targetName, fullSentence, ct);
+
+        // A base word that only points somewhere else again is a chain we decline to follow.
+        if (resolved == null || InflectionParser.RedirectFor(resolved.Meanings, redirect.BaseWord) != null)
+            return outcome;
+
+        // Everything except the word itself comes from the base entry: its definition, its
+        // pronunciation, its synonyms. The headword stays whatever the reader hovered, because
+        // that is the word on their screen and the one the highlight is sitting on.
+        return resolved with
+        {
+            CefrLevel = string.IsNullOrEmpty(resolved.CefrLevel) ? outcome.CefrLevel : resolved.CefrLevel,
+            TranslatedWord = outcome.TranslatedWord ?? resolved.TranslatedWord,
+        };
     }
 
     private async Task<DictionaryOutcome?> LookupOneDictionaryAsync(
@@ -384,10 +680,13 @@ public class TranslationService
                 return null;
         }
 
-        static DictionaryOutcome? Adapt(string id, DictionaryLookupResult? r, string word) =>
-            r is { Error: null, Meanings.Length: > 0 }
-                ? new DictionaryOutcome(id, r.Meanings, r.Phonetic, r.PartOfSpeech, CefrEstimator.Estimate(word, r.Meanings), r.Synonyms)
-                : null;
+        static DictionaryOutcome? Adapt(string id, DictionaryLookupResult? r, string word)
+        {
+            if (r is not { Error: null, Meanings.Length: > 0 }) return null;
+
+            var meanings = Refine(r.Meanings);
+            return new DictionaryOutcome(id, meanings, r.Phonetic, r.PartOfSpeech, CefrEstimator.Estimate(word, meanings), r.Synonyms);
+        }
     }
 
     /// <summary>On-demand lookup from the popup's source switcher - one named source, no
@@ -398,14 +697,23 @@ public class TranslationService
         var lower = word.ToLowerInvariant().Trim();
         try
         {
-            return providerId switch
+            var result = await AskOneDictionaryAsync(providerId, lower, languageCode, ct);
+            if (result.Error != null) return result;
+
+            // The switcher follows cross-references for the same reason the automatic path does:
+            // picking a different source to escape "plural of revelation" and being handed "plural
+            // of revelation" again is the switcher appearing not to work.
+            var redirect = InflectionParser.RedirectFor(result.Meanings, lower);
+            if (redirect != null)
             {
-                "dictionaryapi.dev" => await LookupDictionaryApiDevAsync(lower, ct),
-                "freedictionaryapi.com" => await LookupFreeDictionaryApiAsync(lower, languageCode, ct),
-                "wiktionary" => await LookupWiktionaryAsync(lower, languageCode, ct),
-                "merriam-webster" => await LookupMerriamWebsterAsync(lower, ct),
-                _ => DictionaryLookupResult.Failed("Unknown dictionary source."),
-            };
+                var resolved = await AskOneDictionaryAsync(providerId, redirect.BaseWord, languageCode, ct);
+                if (resolved.Error == null &&
+                    resolved.Meanings.Length > 0 &&
+                    InflectionParser.RedirectFor(resolved.Meanings, redirect.BaseWord) == null)
+                    return resolved with { Meanings = Refine(resolved.Meanings) };
+            }
+
+            return result with { Meanings = Refine(result.Meanings) };
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -414,6 +722,17 @@ public class TranslationService
             return DictionaryLookupResult.Failed("Lookup failed - the service may be unavailable.");
         }
     }
+
+    private async Task<DictionaryLookupResult> AskOneDictionaryAsync(
+        string providerId, string word, string languageCode, CancellationToken ct) =>
+        providerId switch
+        {
+            "dictionaryapi.dev" => await LookupDictionaryApiDevAsync(word, ct),
+            "freedictionaryapi.com" => await LookupFreeDictionaryApiAsync(word, languageCode, ct),
+            "wiktionary" => await LookupWiktionaryAsync(word, languageCode, ct),
+            "merriam-webster" => await LookupMerriamWebsterAsync(word, ct),
+            _ => DictionaryLookupResult.Failed("Unknown dictionary source."),
+        };
 
     private async Task<DictionaryLookupResult> LookupDictionaryApiDevAsync(string word, CancellationToken ct)
     {
@@ -454,11 +773,11 @@ public class TranslationService
                 if (partOfSpeech.Length == 0 && meaning.TryGetProperty("partOfSpeech", out var pos))
                     partOfSpeech = pos.GetString() ?? "";
 
-                if (meanings.Count < 3 && meaning.TryGetProperty("definitions", out var defs) && defs.ValueKind == JsonValueKind.Array)
+                if (meanings.Count < CollectedMeanings && meaning.TryGetProperty("definitions", out var defs) && defs.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var d in defs.EnumerateArray())
                     {
-                        if (meanings.Count >= 3) break;
+                        if (meanings.Count >= CollectedMeanings) break;
                         if (d.TryGetProperty("definition", out var text) && text.GetString() is { Length: > 0 } value)
                             meanings.Add(value);
                     }
@@ -519,7 +838,7 @@ public class TranslationService
             {
                 foreach (var sense in senses.EnumerateArray())
                 {
-                    if (meanings.Count < 3 && sense.TryGetProperty("definition", out var defEl) &&
+                    if (meanings.Count < CollectedMeanings && sense.TryGetProperty("definition", out var defEl) &&
                         defEl.GetString() is { Length: > 0 } d)
                         meanings.Add(d);
 
@@ -575,7 +894,7 @@ public class TranslationService
 
             foreach (var d in defs.EnumerateArray())
             {
-                if (meanings.Count >= 3) break;
+                if (meanings.Count >= CollectedMeanings) break;
                 if (d.TryGetProperty("definition", out var text) && text.GetString() is { Length: > 0 } raw)
                 {
                     var clean = HtmlText.Strip(raw);
@@ -583,7 +902,7 @@ public class TranslationService
                 }
             }
 
-            if (meanings.Count >= 3) break;
+            if (meanings.Count >= CollectedMeanings) break;
         }
 
         return meanings.Count == 0
@@ -623,12 +942,12 @@ public class TranslationService
             {
                 foreach (var d in shortdef.EnumerateArray())
                 {
-                    if (meanings.Count >= 3) break;
+                    if (meanings.Count >= CollectedMeanings) break;
                     if (d.GetString() is { Length: > 0 } text) meanings.Add(text);
                 }
             }
 
-            if (meanings.Count >= 3) break;
+            if (meanings.Count >= CollectedMeanings) break;
         }
 
         return meanings.Count == 0
@@ -956,7 +1275,7 @@ public class TranslationService
             {
                 ProviderKind.Dictionary => await ProbeDictionaryAsync(providerId, ct),
                 ProviderKind.Translation => await ProbeTranslationAsync(providerId, ct),
-                ProviderKind.Encyclopedia => await _encyclopedia.Value.LookupAsync("Nvidia", "en", ct) != null,
+                ProviderKind.Encyclopedia => await ProbeEncyclopediaAsync(providerId, ct),
                 _ => false,
             };
 
@@ -980,6 +1299,11 @@ public class TranslationService
         var result = await LookupDictionaryAsync(providerId, "language", "en", ct);
         return result.Error == null && result.Meanings.Length > 0;
     }
+
+    /// <summary>Probes with a name every source should know, so a failure here means the source is
+    /// unreachable rather than merely ignorant.</summary>
+    private async Task<bool> ProbeEncyclopediaAsync(string providerId, CancellationToken ct) =>
+        await LookupOneEncyclopediaAsync(providerId, "Nvidia", "en", EncyclopediaService.ShortSummaryLength, ct) != null;
 
     private async Task<bool> ProbeTranslationAsync(string providerId, CancellationToken ct)
     {

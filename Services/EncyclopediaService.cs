@@ -37,15 +37,45 @@ public sealed class EncyclopediaService
     /// minor characters, small companies - which is exactly the long tail this feature exists for.
     /// A short true answer beats "no definition found".
     /// </summary>
-    public async Task<EncyclopediaEntry?> LookupAsync(string term, string languageCode = "en", CancellationToken ct = default)
+    /// <summary>
+    /// Asks one specific wiki source. The order they are tried in - and the AI sources that now sit
+    /// behind them - is <see cref="TranslationService"/>'s business, because that is where the
+    /// provider catalog, the user's chosen default and the API keys all live. This class only knows
+    /// how to talk to Wikimedia.
+    /// </summary>
+    /// <param name="maxSummaryLength">How much of the article's opening paragraph to keep, cut on a
+    /// sentence boundary - the "Answer length" setting. Wikidata answers are a single line and are
+    /// never trimmed.</param>
+    /// <returns>Null for an unrecognized provider id as well as for a miss, so a stale setting
+    /// degrades into the next source in the chain rather than throwing.</returns>
+    public async Task<EncyclopediaEntry?> LookupAsync(
+        string providerId, string term, string languageCode = "en",
+        int maxSummaryLength = StandardSummaryLength, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(term)) return null;
 
-        return await LookupWikipediaAsync(term, languageCode, ct)
-               ?? await LookupWikidataAsync(term, languageCode, ct);
+        return providerId switch
+        {
+            "wikipedia" => await LookupWikipediaAsync(term, languageCode, maxSummaryLength, ct),
+            "wikidata" => await LookupWikidataAsync(term, languageCode, ct),
+            _ => null,
+        };
     }
 
-    private async Task<EncyclopediaEntry?> LookupWikipediaAsync(string term, string languageCode, CancellationToken ct)
+    public const int ShortSummaryLength = 140;
+    public const int StandardSummaryLength = 260;
+    public const int FullSummaryLength = 700;
+
+    /// <summary>Maps the stored "Answer length" id onto a character budget.</summary>
+    public static int SummaryLengthFor(string? setting) => setting switch
+    {
+        "Short" => ShortSummaryLength,
+        "Full" => FullSummaryLength,
+        _ => StandardSummaryLength,
+    };
+
+    private async Task<EncyclopediaEntry?> LookupWikipediaAsync(
+        string term, string languageCode, int maxSummaryLength, CancellationToken ct)
     {
         var edition = EditionFor(languageCode);
         var url = $"https://{edition}.wikipedia.org/api/rest_v1/page/summary/{Uri.EscapeDataString(term.Trim())}?redirect=true";
@@ -76,7 +106,7 @@ public sealed class EncyclopediaService
                 ? page.GetString() ?? url
                 : url;
 
-            return new EncyclopediaEntry(title, FirstSentences(summary), description, sourceUrl);
+            return new EncyclopediaEntry(title, FirstSentences(summary, maxSummaryLength), description, sourceUrl);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -158,7 +188,7 @@ public sealed class EncyclopediaService
 
     /// <summary>Wikipedia's first paragraph runs long; the popup has room for a line or two.
     /// Cut on sentence boundaries so the result never ends mid-clause.</summary>
-    private static string FirstSentences(string text, int maxLength = 260)
+    private static string FirstSentences(string text, int maxLength = StandardSummaryLength)
     {
         var clean = text.Replace('\n', ' ').Trim();
         if (clean.Length <= maxLength) return clean;

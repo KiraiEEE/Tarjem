@@ -70,20 +70,22 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Shown only once there is somewhere for the money to go. Until then the
-                     window is purely a thank-you, because a donate button that goes nowhere is
-                     worse than no donate button. -->
-                <StackPanel x:Name="DonatePanel" Margin="0,18,0,0" Visibility="Collapsed">
+                <!-- Shown, and disabled, while there is nowhere for the money to go yet. Visible
+                     rather than hidden because "not yet" is a truer answer than pretending the
+                     option was never planned - and the line underneath says so plainly instead of
+                     leaving a dead button to be discovered by clicking it. -->
+                <StackPanel x:Name="DonatePanel" Margin="0,18,0,0">
                     <ui:Button x:Name="DonateButton"
                                Content="Buy me a coffee"
                                Icon="{ui:SymbolIcon Heart24}"
                                Appearance="Primary"
                                HorizontalAlignment="Stretch"
                                Click="DonateButton_Click"/>
-                    <TextBlock Text="Opens in your browser. Any amount, once - never a subscription."
+                    <TextBlock x:Name="DonateNote"
                                FontSize="11.5"
                                Opacity="0.65"
                                TextAlignment="Center"
+                               TextWrapping="Wrap"
                                Margin="0,8,0,0"/>
                 </StackPanel>
 
@@ -101,15 +103,7 @@
                                Icon="{ui:SymbolIcon Star24}"
                                Appearance="Secondary"
                                HorizontalAlignment="Stretch"
-                               Margin="0,0,0,6"
                                Click="StarButton_Click"/>
-
-                    <ui:Button x:Name="FeedbackButton"
-                               Content="Report a bug or suggest something"
-                               Icon="{ui:SymbolIcon Chat24}"
-                               Appearance="Secondary"
-                               HorizontalAlignment="Stretch"
-                               Click="FeedbackButton_Click"/>
                 </StackPanel>
 
                 <ui:Button x:Name="CloseButton"

@@ -22,13 +22,33 @@ Match the register and tone of the original: casual stays casual, formal stays f
 
 Use only native {targetLanguageName} script and spelling. Never transliterate, never leave source-language words in, never add notes, alternatives, parentheses or explanations.";
 
-    /// <summary>Region (Alt+W) translation: an arbitrary block of text lifted off the screen.</summary>
+    /// <summary>
+    /// Region (Alt+W) translation: an arbitrary block of text lifted off the screen.
+    ///
+    /// This is the call most likely to come back literal, and it's worth understanding why. The
+    /// model is handed a bare fragment with no question attached - a menu item, a line of dialogue,
+    /// a sign, half a paragraph - and with nothing to anchor it, the safest-looking output is a
+    /// word-shaped mapping of the input. The instructions below spend their length on the two
+    /// things that actually pull it away from that: making it work out what *kind* of text this is
+    /// before writing anything, and naming the specific literalisms (calqued idioms, English word
+    /// order, translated UI verbs) that are the recognizable signature of machine translation.
+    /// </summary>
     public static string TextTranslationRequest(string text, string sourceLanguageName, string targetLanguageName) =>
         $@"Rewrite this {sourceLanguageName} text in natural {targetLanguageName}.
 
-Keep the original line breaks, because the result is drawn back over the layout it came from. The text was read off a screen by OCR, so it may contain small recognition errors - infer what was meant and translate that, rather than reproducing an obvious typo.
+It was captured off a screen, so before you write anything, work out what kind of text it is - game or film dialogue, a menu or button, a heading, an error message, prose, a caption - and write what that kind of text would say in {targetLanguageName}. A menu item is a menu item in {targetLanguageName} too, phrased the way {targetLanguageName} software phrases it, not a translated English sentence.
 
-Return only the {targetLanguageName} text. No quotes, no commentary, nothing before or after it.
+Write it as though it had been authored in {targetLanguageName} in the first place:
+- Say what the original means, not what its words are. If a natural {targetLanguageName} phrasing shares no words with the original, that phrasing is the right answer.
+- Idioms, slang and set phrases become their {targetLanguageName} equivalents. Never translate one literally - a calqued idiom is the clearest sign of machine translation there is.
+- Use {targetLanguageName} word order and sentence structure throughout. Do not carry the original's clause order, punctuation habits or connectives across.
+- Keep proper nouns, character names, brands and on-screen key names as they are, unless {targetLanguageName} has an established form for them.
+- Match the register exactly: casual stays casual, formal stays formal, and dialogue keeps its character's voice and energy.
+- Keep it about as long as the original. It is drawn back over the space the text came from, so an explanatory expansion will not fit.
+
+Keep the original line breaks - the result is drawn back over the layout it came from. The text was read by OCR and may contain recognition errors: infer what was meant and translate that, rather than reproducing an obvious typo. If a fragment is cut off mid-sentence, translate the fragment as a fragment; do not invent an ending for it.
+
+Return only the {targetLanguageName} text. No quotes, no commentary, no alternatives, no notes, nothing before or after it.
 
 Text:
 {text}";
@@ -49,6 +69,37 @@ Answer in exactly {(hasSentence ? "two lines" : "one line")}, with no labels and
 Line 1: the word in {targetLanguageName}
 {(hasSentence ? $"Line 2: the whole sentence rewritten in natural {targetLanguageName}" : "")}";
     }
+
+    /// <summary>The standing role for the "what is this?" (Alt+E) lookup. Deliberately not the
+    /// translation instruction above: this call is answering a question of fact, and the one thing
+    /// it must never do is write fluently about something it doesn't actually know.</summary>
+    public static string EncyclopediaSystemInstruction(string sourceLanguageName) =>
+        $@"You identify proper nouns - companies, products, games, places, people, works - and say what they are, in {sourceLanguageName}.
+
+Accuracy outranks helpfulness here, without exception. You are the fallback for names that no encyclopedia had an entry for, so the honest answer is very often that you do not know, and saying so is a correct and expected result. Never guess from the shape of a word, never blend several things that share a name into one description, and never describe something you are not confident actually exists.
+
+Return only the JSON object described, with no markdown fences and no commentary.";
+
+    /// <summary>
+    /// The "what is this?" (Alt+E) lookup for an AI provider - the fallback for names Wikipedia and
+    /// Wikidata both came back empty on.
+    ///
+    /// The <c>known</c> flag is the whole design. Asked "what is X", every one of these models will
+    /// produce a confident paragraph about something, which for an unrecognized name is worse than
+    /// the "nothing found" it replaced: a wrong answer in this card is indistinguishable from a
+    /// right one. Giving the model an explicit, blessed way to decline is what makes it usable at
+    /// all.
+    /// </summary>
+    public static string EncyclopediaRequest(string term, string sourceLanguageName) =>
+        $@"What is ""{term}""?
+
+Return a single JSON object with exactly these fields:
+- ""known"": true only if you are genuinely confident you know what this specific name refers to. If it could be several unrelated things, if you would be guessing from how the word looks, or if you simply have not heard of it, return false.
+- ""title"": the name written properly, with its real capitalization and spelling
+- ""kind"": a short noun phrase saying what category of thing it is, in {sourceLanguageName} - e.g. ""American technology company"", ""role-playing video game"", ""British physicist"". No sentence, no article, at most six words.
+- ""summary"": one to three plain sentences in {sourceLanguageName} saying what it is and what it is known for. No marketing language, no lists, no markdown.
+
+If ""known"" is false, set ""title"" to the name as given and leave ""kind"" and ""summary"" as empty strings. Do not apologise or explain in the summary field - an empty string is the answer.";
 
     /// <summary>Word (Alt+Q) lookup for providers that support a response schema, which gets both
     /// the dictionary entry and the translation from a single request.</summary>

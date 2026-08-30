@@ -135,6 +135,23 @@ public static class ProviderCatalog
         // vastly more entities (products, minor characters, companies) than have prose pages.
         new("wikidata", "Wikidata", ProviderKind.Encyclopedia, Rank: 20,
             Note: "No key needed. One-line descriptions, including things Wikipedia has no article for."),
+
+        // Ranked below both wikis on purpose. These answer for the genuine long tail - a character
+        // from a game, a small studio, a piece of slang-turned-product - that neither wiki carries
+        // an entity for at all. But they are models rather than records: they are asked to say when
+        // they don't know (see TranslationPrompts.EncyclopediaRequest), and an answer that survives
+        // that is still a recollection, not a citation. Sources that can cite come first.
+        new("gemini", "Gemini AI", ProviderKind.Encyclopedia, Rank: 30, RequiresKey: true,
+            KeyUrl: "https://aistudio.google.com/apikey",
+            Note: "Answers for names no wiki has an entry for. From the model's memory, so it can be wrong."),
+
+        new("groq", "Groq (Llama)", ProviderKind.Encyclopedia, Rank: 40, RequiresKey: true,
+            KeyUrl: "https://console.groq.com/keys",
+            Note: "Free key, no card. The fastest of the AI sources."),
+
+        new("cerebras", "Cerebras", ProviderKind.Encyclopedia, Rank: 50, RequiresKey: true,
+            KeyUrl: "https://cloud.cerebras.ai/",
+            Note: "Free key, no card. 1M tokens per day."),
     ];
 
     public static IEnumerable<ProviderDescriptor> OfKind(ProviderKind kind) =>

@@ -18,9 +18,7 @@ public enum LookupMode
 /// <summary>Everything the UI needs to present one finished lookup.</summary>
 /// <param name="Result">The answer, or null when there was nothing to show.</param>
 /// <param name="WordRectPhysical">Where the word sits on screen, in physical pixels.</param>
-/// <param name="Capture">The screenshot the word came from, for accent extraction. Owned by the
-/// caller - <see cref="LookupPipeline"/> disposes it once the caller has been handed the result.</param>
-public sealed record LookupOutcome(TranslationResult? Result, WpfRect WordRectPhysical, Bitmap? Capture);
+public sealed record LookupOutcome(TranslationResult? Result, WpfRect WordRectPhysical);
 
 /// <summary>
 /// Capture → OCR → word match → answer, for both word hotkeys.
@@ -48,7 +46,7 @@ public sealed class LookupPipeline
     /// Everything up to (but not including) asking a provider: capture, recognize, pick the word.
     /// Split out so a caller can put something on screen while the network call is still running.
     /// </summary>
-    public sealed record WordPeek(WordMatch Match, string LanguageTag, WpfRect WordRectPhysical, Bitmap? Capture)
+    public sealed record WordPeek(WordMatch Match, string LanguageTag, WpfRect WordRectPhysical)
     {
         public bool Found => Match.Found;
 
@@ -67,6 +65,7 @@ public sealed class LookupPipeline
             var (bitmap, offsetX, offsetY) = await _ocr.CaptureAtCursorAsync(new WpfPoint(cursorPosition.X, cursorPosition.Y));
             capture = bitmap;
             ct.ThrowIfCancellationRequested();
+
 
             var recognized = await RecognizeAsync(bitmap, settings, ct);
             if (recognized == null) return null;
@@ -88,9 +87,7 @@ public sealed class LookupPipeline
                 match.Word.Bounds.Width,
                 match.Word.Bounds.Height);
 
-            var peek = new WordPeek(match, languageTag, wordRect, capture);
-            capture = null; // ownership moves to the peek
-            return peek;
+            return new WordPeek(match, languageTag, wordRect);
         }
         finally
         {
@@ -108,35 +105,20 @@ public sealed class LookupPipeline
     public async Task<LookupOutcome?> RunAsync(LookupMode mode, Point cursorPosition, CancellationToken ct, WordPeek? peek = null)
     {
         peek ??= await PeekWordAsync(cursorPosition, ct);
-        if (peek is not { Found: true })
-        {
-            peek?.Capture?.Dispose();
-            return null;
-        }
+        if (peek is not { Found: true }) return null;
 
-        var capture = peek.Capture;
+        var result = mode == LookupMode.Explain
+            ? await ExplainAsync(peek, ct)
+            : await TranslateAsync(peek.Match, peek.LanguageTag, ct);
 
-        try
-        {
-            var result = mode == LookupMode.Explain
-                ? await ExplainAsync(peek, ct)
-                : await TranslateAsync(peek.Match, peek.LanguageTag, ct);
+        ct.ThrowIfCancellationRequested();
 
-            ct.ThrowIfCancellationRequested();
+        // Encyclopedia answers aren't vocabulary, so they stay out of history for the same
+        // reason region translations do.
+        if (result != null && _settings.Current.HistoryEnabled && mode == LookupMode.Translate)
+            _history.Add(result);
 
-            // Encyclopedia answers aren't vocabulary, so they stay out of history for the same
-            // reason region translations do.
-            if (result != null && _settings.Current.HistoryEnabled && mode == LookupMode.Translate)
-                _history.Add(result);
-
-            var outcome = new LookupOutcome(result, peek.WordRectPhysical, capture);
-            capture = null; // handed to the caller
-            return outcome;
-        }
-        finally
-        {
-            capture?.Dispose();
-        }
+        return new LookupOutcome(result, peek.WordRectPhysical);
     }
 
     private async Task<(RecognizedText Text, string LanguageTag)?> RecognizeAsync(
@@ -167,11 +149,20 @@ public sealed class LookupPipeline
     /// means nothing is written to disk.</summary>
     private async Task<TranslationResult?> TranslateAsync(WordMatch match, string languageTag, CancellationToken ct)
     {
+        // Both spellings, because which one the lookup will settle on isn't known until it runs -
+        // and the cache is keyed on the answer, not on the guess.
+        if (match.WasCorrected && _history.IsCached(match.Raw))
+            return _history.GetCached(match.Raw);
+
         if (_history.IsCached(match.Target))
             return _history.GetCached(match.Target);
 
-        var result = await _translation.TranslateWord(match.Target, match.Context, languageTag, ct);
-        _history.CacheResult(match.Target, result);
+        var result = await _translation.TranslateWord(match.Target, match.Context, languageTag, ct, match.Raw);
+
+        // Keyed on the word actually answered about. Keying it on the correction meant a confirmed
+        // reading of "governorate" was filed under "governor", and the next hover on "governor"
+        // got the wrong entry back out of the cache.
+        _history.CacheResult(result.OriginalWord, result);
         return result;
     }
 

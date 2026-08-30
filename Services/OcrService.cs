@@ -37,8 +37,15 @@ public class OcrService
     /// "Optional features"), so a language the user picks in our Settings may not actually be
     /// installed. Callers should check this before relying on <see cref="GetOrCreateEngine"/>
     /// succeeding, so they can tell the user why instead of silently falling back.</summary>
-    public bool IsLanguageAvailable(string languageTag) =>
-        _engines.ContainsKey(languageTag) || IsWindowsLanguagePackInstalled(languageTag);
+    public bool IsLanguageAvailable(string languageTag)
+    {
+        lock (_engines)
+        {
+            if (_engines.ContainsKey(languageTag)) return true;
+        }
+
+        return IsWindowsLanguagePackInstalled(languageTag);
+    }
 
     /// <summary>Static so Settings UI can warn about a picked language before OCR ever runs,
     /// without needing an <see cref="OcrService"/> instance (it's a plain Windows API query,
@@ -55,22 +62,32 @@ public class OcrService
         }
     }
 
+    /// <summary>Builds and caches the engine for <paramref name="languageTag"/> ahead of time, so
+    /// the first lookup doesn't pay for it. Silently does nothing if that language has no pack
+    /// installed - the lookup path already falls back to English in that case.</summary>
+    public void WarmUp(string languageTag) => GetOrCreateEngine(languageTag);
+
+    /// <remarks>Locked because <see cref="WarmUp"/> runs this on a background thread at startup
+    /// while a hotkey press could be reaching it from the UI thread at the same moment.</remarks>
     private OcrEngine? GetOrCreateEngine(string languageTag)
     {
-        if (_engines.TryGetValue(languageTag, out var cached))
-            return cached;
+        lock (_engines)
+        {
+            if (_engines.TryGetValue(languageTag, out var cached))
+                return cached;
 
-        try
-        {
-            var engine = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language(languageTag));
-            if (engine != null)
-                _engines[languageTag] = engine;
-            return engine;
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "Failed to create OCR engine for language {LanguageTag}", languageTag);
-            return null;
+            try
+            {
+                var engine = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language(languageTag));
+                if (engine != null)
+                    _engines[languageTag] = engine;
+                return engine;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to create OCR engine for language {LanguageTag}", languageTag);
+                return null;
+            }
         }
     }
 

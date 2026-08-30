@@ -27,103 +27,198 @@
                 <DropShadowEffect x:Name="CardShadow" BlurRadius="20" ShadowDepth="3" Opacity="0.20" Color="Black"/>
             </Border.Effect>
 
+            <Grid>
+            <!-- Glass style only - see the matching pair in PopupWindow.xaml. Childless Borders,
+                 so neither has any say in how big the card is. -->
+            <Border x:Name="GlassBackdropLayer" Visibility="Collapsed" Margin="-22">
+                <Border.Effect>
+                    <BlurEffect Radius="26" KernelType="Gaussian" RenderingBias="Performance"/>
+                </Border.Effect>
+            </Border>
+            <Border x:Name="GlassTintLayer" Visibility="Collapsed"/>
+
             <StackPanel Margin="18,15,18,16">
+                    <!-- Source line: what this is, and where the answer came from -->
+                    <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
 
-                <!-- Source line: what this is, and where the answer came from -->
-                <Grid Margin="0,0,0,10">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="ABOUT"
+                                   x:Name="KindLabel"
+                                   FontSize="10"
+                                   FontWeight="SemiBold"
+                                   Foreground="#FF8888AA"
+                                   VerticalAlignment="Center"/>
 
-                    <TextBlock Grid.Column="0"
-                               Text="ABOUT"
-                               x:Name="KindLabel"
-                               FontSize="10"
-                               FontWeight="SemiBold"
+                        <!-- Where the answer came from, and a way to ask somewhere else. Alt+E
+                             has five sources behind it now - two wikis and three models - and
+                             which one answered matters more here than anywhere else in the app,
+                             because a wiki entry and a model's recollection render identically. -->
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock x:Name="SourceChip"
+                                       FontSize="10.5"
+                                       Foreground="#FF8888AA"
+                                       VerticalAlignment="Center"/>
+
+                            <ComboBox x:Name="SourceCombo"
+                                      Width="16" Height="16"
+                                      Margin="5,0,0,0"
+                                      Cursor="Hand"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      Padding="0"
+                                      VerticalAlignment="Center"
+                                      ToolTip="Ask a different source"
+                                      SelectionChanged="SourceCombo_SelectionChanged">
+                                <ComboBox.Template>
+                                    <ControlTemplate TargetType="ComboBox">
+                                        <Grid Width="16" Height="16">
+                                            <ToggleButton Focusable="False"
+                                                          ClickMode="Press"
+                                                          IsChecked="{Binding Path=IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                                <ToggleButton.Template>
+                                                    <ControlTemplate TargetType="ToggleButton">
+                                                        <Border x:Name="Bg" Background="Transparent" CornerRadius="4">
+                                                            <Path x:Name="Arrow"
+                                                                  Data="M1,2 L5,6.5 L9,2"
+                                                                  Stroke="#FF8888AA"
+                                                                  StrokeThickness="1.4"
+                                                                  StrokeStartLineCap="Round"
+                                                                  StrokeEndLineCap="Round"
+                                                                  HorizontalAlignment="Center"
+                                                                  VerticalAlignment="Center"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Bg" Property="Background" Value="#33808080"/>
+                                                                <Setter TargetName="Arrow" Property="Stroke" Value="#FFDDDDDD"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </ToggleButton.Template>
+                                            </ToggleButton>
+
+                                            <Popup IsOpen="{TemplateBinding IsDropDownOpen}"
+                                                   Placement="Bottom"
+                                                   AllowsTransparency="True"
+                                                   PopupAnimation="Fade"
+                                                   StaysOpen="False">
+                                                <Border x:Name="DropBorder"
+                                                        Background="#FF262636"
+                                                        BorderBrush="#FF3A3A4A"
+                                                        BorderThickness="1"
+                                                        CornerRadius="6"
+                                                        Padding="3"
+                                                        Margin="0,4,0,0"
+                                                        MinWidth="130">
+                                                    <StackPanel IsItemsHost="True"/>
+                                                </Border>
+                                            </Popup>
+                                        </Grid>
+                                    </ControlTemplate>
+                                </ComboBox.Template>
+                                <ComboBox.ItemContainerStyle>
+                                    <Style TargetType="ComboBoxItem">
+                                        <Setter Property="Padding" Value="8,4"/>
+                                        <Setter Property="Foreground" Value="#FFDDDDDD"/>
+                                        <Setter Property="FontSize" Value="11"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ComboBoxItem">
+                                                    <Border x:Name="Bd" Background="Transparent" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsHighlighted" Value="True">
+                                                            <Setter TargetName="Bd" Property="Background" Value="#FF3A3A4A"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ComboBox.ItemContainerStyle>
+                            </ComboBox>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- The name itself -->
+                    <TextBlock x:Name="TitleText"
+                               FontSize="21"
+                               FontWeight="Bold"
+                               Foreground="#FFFFFFFF"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,2"/>
+
+                    <!-- Wikidata/Wikipedia's short descriptor, e.g. "American technology company" -->
+                    <TextBlock x:Name="DescriptorText"
+                               FontSize="12"
+                               Foreground="#FF9F7AEA"
+                               TextWrapping="Wrap"
+                               Visibility="Collapsed"
+                               Margin="0,0,0,8"/>
+
+                    <!-- The summary, in the source language -->
+                    <TextBlock x:Name="SummaryText"
+                               FontSize="13"
+                               LineHeight="19"
+                               Foreground="#FFDDDDDD"
+                               TextWrapping="Wrap"
+                               Margin="0,6,0,0"/>
+
+                    <Border x:Name="TranslationDivider"
+                            Height="1"
+                            Background="#FF3A3A4A"
+                            Margin="0,13,0,11"
+                            Visibility="Collapsed"/>
+
+                    <!-- The same summary in the user's language -->
+                    <TextBlock x:Name="TranslatedSummaryText"
+                               FontSize="13.5"
+                               LineHeight="21"
+                               Foreground="#FFEEEEEE"
+                               TextWrapping="Wrap"
+                               Visibility="Collapsed"/>
+
+                    <!-- Loading state -->
+                    <TextBlock x:Name="LoadingText"
+                               Text="Looking it up…"
+                               FontSize="13"
                                Foreground="#FF8888AA"
-                               VerticalAlignment="Center"/>
+                               Visibility="Collapsed"
+                               Margin="0,6,0,0"/>
 
-                    <TextBlock Grid.Column="2"
-                               x:Name="SourceChip"
-                               FontSize="10.5"
-                               Foreground="#FF8888AA"
-                               VerticalAlignment="Center"/>
-                </Grid>
-
-                <!-- The name itself -->
-                <TextBlock x:Name="TitleText"
-                           FontSize="21"
-                           FontWeight="Bold"
-                           Foreground="#FFFFFFFF"
-                           TextWrapping="Wrap"
-                           Margin="0,0,0,2"/>
-
-                <!-- Wikidata/Wikipedia's short descriptor, e.g. "American technology company" -->
-                <TextBlock x:Name="DescriptorText"
-                           FontSize="12"
-                           Foreground="#FF9F7AEA"
-                           TextWrapping="Wrap"
-                           Visibility="Collapsed"
-                           Margin="0,0,0,8"/>
-
-                <!-- The summary, in the source language -->
-                <TextBlock x:Name="SummaryText"
-                           FontSize="13"
-                           LineHeight="19"
-                           Foreground="#FFDDDDDD"
-                           TextWrapping="Wrap"
-                           Margin="0,6,0,0"/>
-
-                <Border x:Name="TranslationDivider"
-                        Height="1"
-                        Background="#FF3A3A4A"
-                        Margin="0,13,0,11"
-                        Visibility="Collapsed"/>
-
-                <!-- The same summary in the user's language -->
-                <TextBlock x:Name="TranslatedSummaryText"
-                           FontSize="13.5"
-                           LineHeight="21"
-                           Foreground="#FFEEEEEE"
-                           TextWrapping="Wrap"
-                           Visibility="Collapsed"/>
-
-                <!-- Loading state -->
-                <TextBlock x:Name="LoadingText"
-                           Text="Looking it up…"
-                           FontSize="13"
-                           Foreground="#FF8888AA"
-                           Visibility="Collapsed"
-                           Margin="0,6,0,0"/>
-
-                <!-- Actions -->
-                <StackPanel x:Name="ActionRow"
-                            Orientation="Horizontal"
-                            Margin="0,14,0,0">
-                    <Button x:Name="CopyButton"
-                            Content="Copy"
-                            Padding="10,4"
-                            FontSize="11.5"
-                            Background="#FF2A2A3A"
-                            Foreground="#FFDDDDDD"
-                            BorderThickness="0"
-                            Cursor="Hand"
-                            Click="Copy_Click"/>
-                    <Button x:Name="SourceButton"
-                            Content="Read more"
-                            Margin="8,0,0,0"
-                            Padding="10,4"
-                            FontSize="11.5"
-                            Background="#FF2A2A3A"
-                            Foreground="#FFDDDDDD"
-                            BorderThickness="0"
-                            Cursor="Hand"
-                            Visibility="Collapsed"
-                            Click="Source_Click"/>
+                    <!-- Actions -->
+                    <StackPanel x:Name="ActionRow"
+                                Orientation="Horizontal"
+                                Margin="0,14,0,0">
+                        <Button x:Name="CopyButton"
+                                Content="Copy"
+                                Padding="10,4"
+                                FontSize="11.5"
+                                Background="#FF2A2A3A"
+                                Foreground="#FFDDDDDD"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Click="Copy_Click"/>
+                        <Button x:Name="SourceButton"
+                                Content="Read more"
+                                Margin="8,0,0,0"
+                                Padding="10,4"
+                                FontSize="11.5"
+                                Background="#FF2A2A3A"
+                                Foreground="#FFDDDDDD"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Visibility="Collapsed"
+                                Click="Source_Click"/>
+                    </StackPanel>
                 </StackPanel>
-            </StackPanel>
+            </Grid>
         </Border>
     </Grid>
 </Window>
