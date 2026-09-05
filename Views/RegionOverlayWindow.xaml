@@ -1,0 +1,207 @@
+<Window x:Class="Tarjem.Views.RegionOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        Left="0" Top="0"
+        Width="1" Height="1"
+        PreviewMouseLeftButtonDown="Window_PreviewMouseDown"
+        PreviewMouseRightButtonDown="Window_PreviewMouseDown">
+    <Window.Resources>
+        <!-- One row of the API dropdown. Kept as a template rather than a plain Button so the
+             hover state reads on top of the dimmed desktop behind it. -->
+        <Style x:Key="ApiItemStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground" Value="#FFEAEAEA"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="8,6"
+                                Margin="4,0">
+                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FF3A3A4A"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="RootGrid">
+        <!-- Full screen dim. Same click-anywhere-to-dismiss surface the Alt+Q overlay uses:
+             it spans the whole monitor so a click outside the translated region still lands
+             on this window instead of falling through to whatever is underneath. -->
+        <Border x:Name="DimOverlay"
+                Background="Black"
+                Opacity="0"/>
+
+        <!-- Dark plate behind the region, sized/positioned in code -->
+        <!-- Fully opaque on purpose. At 90% the text underneath stayed faintly legible, and a
+             translation you can read the original through does not read as a translation - it
+             reads as two lines of text on top of each other. -->
+        <Border x:Name="HighlightBorder"
+                Background="#FF111111"
+                CornerRadius="4"
+                Opacity="0"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"/>
+
+        <!-- Translated text, laid out inside the region plate -->
+        <Border x:Name="TextContainer"
+                IsHitTestVisible="False"
+                ClipToBounds="True"
+                Opacity="0"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top">
+            <StackPanel>
+                <TextBlock x:Name="OriginalText"
+                           Foreground="#99FFFFFF"
+                           TextWrapping="Wrap"
+                           Visibility="Collapsed"
+                           Margin="0,0,0,4"
+                           IsHitTestVisible="False"/>
+                <TextBlock x:Name="TranslatedText"
+                           Foreground="White"
+                           TextWrapping="Wrap"
+                           IsHitTestVisible="False"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Loading indicator, covering the region -->
+        <Grid x:Name="LoadingPanel"
+              Opacity="0"
+              Visibility="Collapsed"
+              IsHitTestVisible="False"
+              ClipToBounds="True"
+              HorizontalAlignment="Left"
+              VerticalAlignment="Top">
+            <Border Background="#E6111111" CornerRadius="4"/>
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <ProgressBar IsIndeterminate="True"
+                             Width="120" Height="3"
+                             Foreground="#5B9EF5"
+                             Background="Transparent"
+                             BorderThickness="0"/>
+                <TextBlock Text="Translating..."
+                           Foreground="#AAFFFFFF"
+                           FontFamily="Segoe UI"
+                           FontSize="12"
+                           HorizontalAlignment="Center"
+                           Margin="0,8,0,0"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Floating provider button: just the arrow. Which source is active is shown by the
+             tick in the list itself, so repeating it here only added clutter over the game.
+             Anchored to the plate's top-right corner and repositioned whenever it moves. -->
+        <Border x:Name="ApiButton"
+                Background="#E62A2A3A"
+                BorderBrush="#FF3A3A4A"
+                BorderThickness="1"
+                CornerRadius="10"
+                Width="26"
+                Height="20"
+                Cursor="Hand"
+                Opacity="0"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                ToolTipService.InitialShowDelay="300"
+                MouseLeftButtonUp="ApiButton_Click">
+            <Border.Effect>
+                <DropShadowEffect Color="Black" BlurRadius="6" ShadowDepth="1" Opacity="0.5"/>
+            </Border.Effect>
+            <Path x:Name="ArrowPath"
+                  Data="M0,0 L4.5,4.5 L9,0"
+                  Stroke="#FFDDDDDD"
+                  StrokeThickness="1.5"
+                  StrokeStartLineCap="Round"
+                  StrokeEndLineCap="Round"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"/>
+        </Border>
+
+        <!-- Copy the translation out. Sits beside the provider chip and is positioned with it. -->
+        <Border x:Name="CopyButton"
+                Background="#E62A2A3A"
+                BorderBrush="#FF3A3A4A"
+                BorderThickness="1"
+                CornerRadius="10"
+                Width="26"
+                Height="20"
+                Cursor="Hand"
+                Opacity="0"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                ToolTip="Copy the translation"
+                ToolTipService.InitialShowDelay="300"
+                MouseLeftButtonUp="CopyButton_Click">
+            <Border.Effect>
+                <DropShadowEffect Color="Black" BlurRadius="6" ShadowDepth="1" Opacity="0.5"/>
+            </Border.Effect>
+            <Grid>
+                <Path x:Name="CopyIcon"
+                      Data="M2,0 L8,0 L8,8 L2,8 Z M0,2 L0,10 L6,10"
+                      Stroke="#FFDDDDDD"
+                      StrokeThickness="1.2"
+                      StrokeStartLineCap="Round"
+                      StrokeEndLineCap="Round"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"/>
+                <TextBlock x:Name="CopiedTick"
+                           Text="✓"
+                           FontSize="11"
+                           Foreground="#FF6FCF7F"
+                           Visibility="Collapsed"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- Provider list, positioned relative to the chip -->
+        <Border x:Name="ApiDropdown"
+                Background="#F22A2A3A"
+                BorderBrush="#FF3A3A4A"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="0,4"
+                Opacity="0"
+                Visibility="Collapsed"
+                MinWidth="150"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                RenderTransformOrigin="0.5,0">
+            <Border.RenderTransform>
+                <TransformGroup>
+                    <ScaleTransform x:Name="DropdownScale" ScaleX="1" ScaleY="0.85"/>
+                    <TranslateTransform x:Name="DropdownTranslate" Y="-6"/>
+                </TransformGroup>
+            </Border.RenderTransform>
+            <Border.Effect>
+                <DropShadowEffect Color="Black" BlurRadius="10" ShadowDepth="2" Opacity="0.55"/>
+            </Border.Effect>
+            <StackPanel x:Name="ApiDropdownItems"/>
+        </Border>
+    </Grid>
+</Window>

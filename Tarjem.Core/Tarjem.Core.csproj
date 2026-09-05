@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Tarjem</RootNamespace>
+    <AssemblyName>Tarjem.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- LogicalName is pinned because RootNamespace here is "Tarjem", not "Tarjem.Core", so the
+         name MSBuild would derive on its own doesn't match what the loader asks for. -->
+    <EmbeddedResource Include="data\wordlist-en.txt.gz" LogicalName="Tarjem.Core.data.wordlist-en.txt.gz" />
+  </ItemGroup>
+
+</Project>

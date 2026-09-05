@@ -1,0 +1,50 @@
+<Window x:Class="Tarjem.Views.RegionSelectionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        Cursor="Cross"
+        Left="0" Top="0"
+        Width="1" Height="1">
+    <Grid>
+        <!-- Frozen screenshot background -->
+        <Image x:Name="ScreenshotBg"
+               Stretch="UniformToFill"
+               RenderOptions.BitmapScalingMode="NearestNeighbor"
+               Opacity="0"/>
+
+        <!-- Dim overlay on top of screenshot -->
+        <Border x:Name="DimOverlay" Background="Black" Opacity="0"/>
+
+        <!-- Selection rectangle -->
+        <Border x:Name="SelectionRect"
+                BorderBrush="#CC5B9EF5"
+                BorderThickness="2"
+                Background="#225B9EF5"
+                CornerRadius="2"
+                Visibility="Collapsed"
+                IsHitTestVisible="False"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"/>
+
+        <!-- Instruction text -->
+        <TextBlock x:Name="HintText"
+                   Text="Drag to select a region to translate"
+                   Foreground="White"
+                   FontSize="16"
+                   FontWeight="SemiBold"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Bottom"
+                   Margin="0,0,0,50"
+                   IsHitTestVisible="False">
+            <TextBlock.Effect>
+                <DropShadowEffect Color="Black" BlurRadius="8" ShadowDepth="2" Opacity="0.7"/>
+            </TextBlock.Effect>
+        </TextBlock>
+    </Grid>
+</Window>

@@ -1,0 +1,48 @@
+<Window x:Class="Tarjem.Views.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        Left="0"
+        Top="0"
+        Width="1"
+        Height="1">
+    <Grid>
+        <!-- Full screen dim -->
+        <Border x:Name="DimOverlay"
+                Background="Black"
+                Opacity="0"/>
+
+        <!-- Yellow word highlight -->
+        <Border x:Name="HighlightBorder"
+                Background="#55F4A261"
+                CornerRadius="3"
+                Opacity="0"
+                IsHitTestVisible="False"/>
+
+        <!-- Optional: the translated word drawn straight over the highlighted one, the way the
+             region overlay draws over the text it replaces. Sized and positioned in code from
+             the same rect as the highlight. -->
+        <Border x:Name="WordOverlayBorder"
+                Background="#F01A1A24"
+                CornerRadius="4"
+                Padding="6,1"
+                Opacity="0"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                IsHitTestVisible="False"
+                Visibility="Collapsed">
+            <TextBlock x:Name="WordOverlayText"
+                       Foreground="#FFFFE9C8"
+                       FontWeight="SemiBold"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"/>
+        </Border>
+    </Grid>
+</Window>

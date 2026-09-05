@@ -1,0 +1,76 @@
+TARJEM - FREE API KEYS TO REGISTER
+==================================
+
+Everything below is free and needs no card. Get each key, then put them in a `.env`
+file next to the built Tarjem.exe in this exact format:
+
+    GEMINI_API_KEY=...
+    GROQ_API_KEY=...
+    CEREBRAS_API_KEY=...
+    MERRIAM_WEBSTER_API_KEY=...
+
+Then run ONCE, from the build output folder:
+
+    Tarjem.exe --pack-keys
+
+That produces `bundled.keys` (encrypted) and that is the file the installer ships.
+DELETE the .env afterwards. Never commit a .env, and never put a key in a .cs file.
+
+
+-----------------------------------------------------------------------
+1. GEMINI            https://aistudio.google.com/apikey
+-----------------------------------------------------------------------
+   Priority:  HIGH - best overall translation and the only source that
+              returns definitions, CEFR level and synonyms in one request.
+   Free tier: ~15 requests/min, 1,000-1,500 requests/day on Flash-Lite.
+   Card:      No.
+   Notes:     Create the key in a NEW Google Cloud project, not the one the
+              old leaked key belonged to. See SECURITY.md.
+
+
+-----------------------------------------------------------------------
+2. GROQ              https://console.groq.com/keys
+-----------------------------------------------------------------------
+   Priority:  HIGH - the fastest AI translation available anywhere free,
+              and the most valuable backup for when Gemini is throttled.
+   Free tier: ~30 requests/min, Llama 3.3 70B.
+   Card:      No.
+
+
+-----------------------------------------------------------------------
+3. CEREBRAS          https://cloud.cerebras.ai/
+-----------------------------------------------------------------------
+   Priority:  MEDIUM - a third AI source so one provider having a bad day
+              never takes AI translation down.
+   Free tier: 1 million tokens/day.
+   Card:      No.
+
+
+-----------------------------------------------------------------------
+4. MERRIAM-WEBSTER   https://dictionaryapi.com/register/index
+-----------------------------------------------------------------------
+   Priority:  LOW - only affects English definitions, and the keyless
+              dictionaries already cover those well. Nice to have.
+   Free tier: 1,000 requests/day. Pick "Collegiate Dictionary".
+   Card:      No.
+
+
+-----------------------------------------------------------------------
+NOT NEEDED - these already work with no key at all
+-----------------------------------------------------------------------
+   FreeDictionaryAPI.com   definitions, 17 languages, 1,000/hour
+   dictionaryapi.dev       English definitions
+   Wiktionary              definitions, widest language coverage
+   Wikipedia               "what is NVIDIA" answers
+   Google Translate        the default translation source
+   Lingva / MyMemory       backup translation
+
+   This is why Tarjem works the moment it's installed, with or without
+   any of the keys above. The keys only make it better.
+
+
+-----------------------------------------------------------------------
+DELIBERATELY NOT USED
+-----------------------------------------------------------------------
+   OpenAI, Anthropic, DeepL Pro, Azure Translator - all paid, or free
+   only behind a card. Revisit if donations ever cover a monthly bill.

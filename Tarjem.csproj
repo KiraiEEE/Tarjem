@@ -1,0 +1,69 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWinRT>true</UseWinRT>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Platforms>x64;x86;AnyCPU</Platforms>
+    <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
+    <AssemblyName>Tarjem</AssemblyName>
+    <RootNamespace>Tarjem</RootNamespace>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <!-- 0.5.0 rather than 0.4.x: this release adds a third hotkey, copy-to-translate, vocabulary
+         export and English as a target language, and moves API keys into encrypted storage. That
+         is a feature release, not a patch. -->
+    <Version>0.5.0</Version>
+    <AssemblyVersion>0.5.0.0</AssemblyVersion>
+    <FileVersion>0.5.0.0</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
+    <PackageReference Include="WPF-UI" Version="3.0.5" />
+    <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="1.1.0" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
+    <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Tarjem.Core\Tarjem.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Tarjem.Core (and future sibling tool/test projects) live in subfolders of this
+       project's own directory. SDK-style projects glob **/*.cs by default, so without
+       these excludes their sources would be compiled twice: once in their own project,
+       once here. -->
+  <ItemGroup>
+    <Compile Remove="Tarjem.Core\**;Tarjem.Core.Tests\**;Tarjem.UiTests\**;tools\**" />
+    <EmbeddedResource Remove="Tarjem.Core\**;Tarjem.Core.Tests\**;Tarjem.UiTests\**;tools\**" />
+    <None Remove="Tarjem.Core\**;Tarjem.Core.Tests\**;Tarjem.UiTests\**;tools\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Assets\icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update=".env">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\icon.ico" />
+    <Resource Include="Assets\sparkling-star.png" />
+    <!-- Bundled so Arabic renders in a real Arabic typeface on every machine rather than in
+         whatever the system happens to fall back to. See Services/UiFonts.cs. -->
+    <Resource Include="Assets\Fonts\*.ttf" />
+    <!-- Language flags, rasterised from flag-icons (MIT) at 64px wide. See Services/LanguageFlags.cs
+         for which flag stands for which language - a few are product choices rather than the
+         obvious default. -->
+    <Resource Include="Assets\Flags\*.png" />
+  </ItemGroup>
+
+</Project>

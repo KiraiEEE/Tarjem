@@ -1,0 +1,1654 @@
+<ui:FluentWindow x:Class="Tarjem.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:local="clr-namespace:Tarjem.Views"
+        Title="Tarjem"
+        Width="1150"
+        Height="780"
+        MinWidth="820"
+        MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica"
+        WindowCornerPreference="Round"
+        Background="{DynamicResource ApplicationBackgroundBrush}">
+    <ui:FluentWindow.Resources>
+        <!-- Language row: flag + name. Matches the pickers in the welcome window. -->
+        <DataTemplate x:Key="LanguageItemTemplate">
+            <StackPanel Orientation="Horizontal">
+                <Image Source="{Binding Flag}"
+                       Width="22" Height="16"
+                       Margin="0,0,10,0"
+                       VerticalAlignment="Center"
+                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+            </StackPanel>
+        </DataTemplate>
+
+        <Style x:Key="NavItemStyle" TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Grid Margin="10,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="3"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="Indicator"
+                                    Grid.Column="0"
+                                    Width="3"
+                                    CornerRadius="2"
+                                    Background="Transparent"
+                                    Margin="0,8"/>
+                            <Border x:Name="Bg"
+                                    Grid.Column="1"
+                                    Background="Transparent"
+                                    CornerRadius="8"
+                                    Padding="0,10"
+                                    Margin="6,0,0,0">
+                                <ContentPresenter HorizontalAlignment="Center"/>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}"/>
+                                <Setter TargetName="Indicator" Property="Background" Value="{DynamicResource AccentFillColorDefaultBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SettingsTabStyle" TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bg" Background="Transparent" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </ui:FluentWindow.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="Tarjem">
+            <ui:TitleBar.Icon>
+                <ui:ImageIcon Source="pack://application:,,,/Tarjem;component/Assets/icon.ico"/>
+            </ui:TitleBar.Icon>
+        </ui:TitleBar>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="84"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Nav rail. A Grid rather than one StackPanel so the support button can sit against
+                 the bottom of the rail instead of trailing the last nav item, wherever that
+                 happens to end up. -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="0,12,0,0">
+                    <RadioButton x:Name="NavHistory"
+                                 GroupName="MainNav"
+                                 IsChecked="True"
+                                 Style="{StaticResource NavItemStyle}"
+                                 Checked="NavHistory_Checked">
+                        <StackPanel Margin="0,2">
+                            <ui:SymbolIcon Symbol="History24" FontSize="20" HorizontalAlignment="Center"/>
+                            <TextBlock Text="History" FontSize="11" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="NavSettings"
+                                 GroupName="MainNav"
+                                 Style="{StaticResource NavItemStyle}"
+                                 Checked="NavSettings_Checked">
+                        <StackPanel Margin="0,2">
+                            <ui:SymbolIcon Symbol="Settings24" FontSize="20" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Settings" FontSize="11" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="NavAbout"
+                                 GroupName="MainNav"
+                                 Style="{StaticResource NavItemStyle}"
+                                 Checked="NavAbout_Checked">
+                        <StackPanel Margin="0,2">
+                            <ui:SymbolIcon Symbol="Info24" FontSize="20" HorizontalAlignment="Center"/>
+                            <TextBlock Text="About" FontSize="11" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </RadioButton>
+                </StackPanel>
+
+                <!-- Deliberately at the very bottom of the rail and deliberately just a heart: it
+                     should be findable by someone who went looking, and invisible to everyone
+                     else. A labelled button in the nav rail reads as a fourth page. -->
+                <Button x:Name="SupportButton"
+                        Grid.Row="1"
+                        Margin="0,0,0,14"
+                        Padding="0,8"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Cursor="Hand"
+                        ToolTip="Support Tarjem"
+                        Click="SupportButton_Click">
+                    <TextBlock Text="&#x2665;"
+                               FontSize="16"
+                               Foreground="#FFE05C7A"
+                               HorizontalAlignment="Center"/>
+                </Button>
+            </Grid>
+
+            <Border Grid.Column="0"
+                    Width="1"
+                    HorizontalAlignment="Right"
+                    Background="{DynamicResource DividerStrokeColorDefaultBrush}"/>
+
+            <!-- Pages -->
+            <Grid Grid.Column="1" Margin="30,22,30,20">
+
+                <!-- ===================== HISTORY PAGE ===================== -->
+                <Grid x:Name="HistoryPage" Visibility="Visible">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Margin="0,0,0,18">
+                        <TextBlock Text="History"
+                                   FontSize="24"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <TextBlock Text="Everything you've looked up with Tarjem"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   Margin="0,2,0,0"/>
+                    </StackPanel>
+
+                    <Grid Grid.Row="1" Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <ui:TextBox x:Name="SearchBox"
+                                    Grid.Column="0"
+                                    PlaceholderText="Search translations..."
+                                    Icon="{ui:SymbolIcon Search24}"
+                                    TextChanged="SearchBox_TextChanged"
+                                    Margin="0,0,10,0"/>
+
+                        <ui:Button Grid.Column="1"
+                                   Content="Export"
+                                   Icon="{ui:SymbolIcon ArrowExportLtr24}"
+                                   Appearance="Secondary"
+                                   ToolTip="Save as an Anki deck or a spreadsheet"
+                                   Margin="0,0,8,0"
+                                   Click="ExportHistory_Click"/>
+
+                        <ui:Button Grid.Column="2"
+                                   Content="Clear"
+                                   Icon="{ui:SymbolIcon Delete24}"
+                                   Appearance="Secondary"
+                                   Click="ClearHistory_Click"/>
+                    </Grid>
+
+                    <Grid Grid.Row="2">
+                        <!-- Proportional rather than a fixed 320px list, so widening the window
+                             gives both the list and the detail pane more room. -->
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2*" MinWidth="240"/>
+                            <ColumnDefinition Width="16"/>
+                            <ColumnDefinition Width="3*" MinWidth="300"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- List column -->
+                        <Grid Grid.Column="0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <ListView x:Name="HistoryList"
+                                      Grid.Row="0"
+                                      BorderThickness="0"
+                                      Background="Transparent"
+                                      SelectionMode="Single"
+                                      SelectionChanged="HistoryList_SelectionChanged"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                        <Setter Property="Padding" Value="0"/>
+                                        <Setter Property="Margin" Value="0,0,0,8"/>
+                                        <Setter Property="Opacity" Value="0"/>
+                                        <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+                                        <Setter Property="RenderTransform">
+                                            <Setter.Value>
+                                                <TranslateTransform Y="6"/>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListViewItem">
+                                                    <ContentPresenter/>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Style.Triggers>
+                                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.18">
+                                                            <DoubleAnimation.EasingFunction>
+                                                                <QuadraticEase EasingMode="EaseOut"/>
+                                                            </DoubleAnimation.EasingFunction>
+                                                        </DoubleAnimation>
+                                                        <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)" To="0" Duration="0:0:0.18">
+                                                            <DoubleAnimation.EasingFunction>
+                                                                <QuadraticEase EasingMode="EaseOut"/>
+                                                            </DoubleAnimation.EasingFunction>
+                                                        </DoubleAnimation>
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </EventTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border x:Name="CardBorder"
+                                                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8"
+                                                Padding="14,11">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+
+                                                <StackPanel Grid.Column="0">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding Word}"
+                                                                   FontSize="14"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                                                   TextTrimming="CharacterEllipsis"/>
+
+                                                        <Border Background="#FF7C3AED"
+                                                                CornerRadius="4"
+                                                                Padding="5,1"
+                                                                Margin="6,0,0,0"
+                                                                VerticalAlignment="Center">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding CefrLevel}" Value="">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <TextBlock Text="{Binding CefrLevel}" FontSize="9" FontWeight="Bold" Foreground="White"/>
+                                                        </Border>
+
+                                                        <Image Source="pack://application:,,,/Tarjem;component/Assets/sparkling-star.png"
+                                                               Width="11" Height="11"
+                                                               Margin="6,0,0,0"
+                                                               VerticalAlignment="Center"
+                                                               RenderOptions.BitmapScalingMode="HighQuality">
+                                                            <Image.Style>
+                                                                <Style TargetType="Image">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsFromGemini}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Image.Style>
+                                                        </Image>
+                                                    </StackPanel>
+
+                                                    <TextBlock Text="{Binding ArabicTranslation}"
+                                                               FontSize="13"
+                                                               FlowDirection="RightToLeft"
+                                                               TextAlignment="Right"
+                                                               Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Margin="0,4,0,0"/>
+                                                </StackPanel>
+
+                                                <Button x:Name="DeleteBtn"
+                                                        Grid.Column="1"
+                                                        Width="24" Height="24"
+                                                        Padding="0"
+                                                        Background="Transparent"
+                                                        BorderThickness="0"
+                                                        Cursor="Hand"
+                                                        Opacity="0"
+                                                        VerticalAlignment="Top"
+                                                        Tag="{Binding}"
+                                                        Click="DeleteEntry_Click"
+                                                        ToolTip="Remove from history">
+                                                    <ui:SymbolIcon Symbol="Delete24" FontSize="13"/>
+                                                </Button>
+                                            </Grid>
+                                        </Border>
+                                        <DataTemplate.Triggers>
+                                            <Trigger SourceName="CardBorder" Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="CardBorder" Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}"/>
+                                                <Setter TargetName="DeleteBtn" Property="Opacity" Value="1"/>
+                                            </Trigger>
+                                            <!-- Selection is the theme's own subtle fill, the way a
+                                                 WinUI list marks a row. The accent-coloured 1.5px
+                                                 stroke this replaced drew a bright box around the
+                                                 selected card, which read as an error state and
+                                                 shifted the layout by half a pixel as it toggled. -->
+                                            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListViewItem}, Path=IsSelected}" Value="True">
+                                                <Setter TargetName="CardBorder" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
+                                                <Setter TargetName="CardBorder" Property="BorderBrush" Value="{DynamicResource ControlStrokeColorDefaultBrush}"/>
+                                            </DataTrigger>
+                                        </DataTemplate.Triggers>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+
+                            <StackPanel x:Name="EmptyState"
+                                        Grid.Row="0"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        Visibility="Visible">
+                                <TextBlock Text="No translations yet"
+                                           FontSize="15"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                           HorizontalAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           TextAlignment="Center"/>
+                                <TextBlock Text="Press Alt+Q anywhere to translate a word"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                           HorizontalAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           TextAlignment="Center"
+                                           Margin="0,6,0,0"/>
+                            </StackPanel>
+
+                            <TextBlock x:Name="CountText"
+                                       Grid.Row="1"
+                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                       FontSize="11"
+                                       Margin="2,10,0,0"/>
+                        </Grid>
+
+                        <!-- Detail column -->
+                        <Border Grid.Column="2"
+                                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="10">
+                            <Grid>
+                                <StackPanel x:Name="DetailEmptyState"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
+                                    <ui:SymbolIcon Symbol="Translate24"
+                                                   FontSize="28"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                   HorizontalAlignment="Center"/>
+                                    <TextBlock Text="Select a translation"
+                                               FontSize="14"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               HorizontalAlignment="Center"
+                                               Margin="0,10,0,0"/>
+                                    <TextBlock Text="Click any word on the left to see full details"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               HorizontalAlignment="Center"
+                                               Margin="0,4,0,0"/>
+                                </StackPanel>
+
+                                <ScrollViewer x:Name="DetailScroll"
+                                              Visibility="Collapsed"
+                                              VerticalScrollBarVisibility="Auto"
+                                              Padding="28,24,28,24">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                                <TextBlock x:Name="DetailWordText"
+                                                           FontSize="28"
+                                                           FontWeight="Bold"
+                                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <Image x:Name="DetailStar"
+                                                       Source="pack://application:,,,/Tarjem;component/Assets/sparkling-star.png"
+                                                       Width="16" Height="16"
+                                                       Margin="8,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       RenderOptions.BitmapScalingMode="HighQuality"
+                                                       Visibility="Collapsed"/>
+                                            </StackPanel>
+                                            <ui:Button Grid.Column="1"
+                                                       Content="Remove"
+                                                       Icon="{ui:SymbolIcon Delete24}"
+                                                       Appearance="Secondary"
+                                                       Click="DeleteDetail_Click"/>
+                                        </Grid>
+
+                                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                            <Border x:Name="DetailCefrBadge"
+                                                    Background="#FF7C3AED"
+                                                    CornerRadius="4"
+                                                    Padding="7,3"
+                                                    Margin="0,0,8,0">
+                                                <TextBlock x:Name="DetailCefrText" Foreground="White" FontSize="11" FontWeight="Bold"/>
+                                            </Border>
+                                            <Border x:Name="DetailPosBadge"
+                                                    Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                                                    CornerRadius="4"
+                                                    Padding="7,3"
+                                                    Margin="0,0,8,0">
+                                                <TextBlock x:Name="DetailPosText" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                            </Border>
+                                            <TextBlock x:Name="DetailPhoneticText"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                       VerticalAlignment="Center"/>
+                                        </StackPanel>
+
+                                        <TextBlock Text="DEFINITION"
+                                                   FontSize="10" FontWeight="Bold"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                   Margin="0,22,0,6"/>
+                                        <TextBlock x:Name="DetailDefinitionText"
+                                                   FontSize="14"
+                                                   TextWrapping="Wrap"
+                                                   LineHeight="20"
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+
+                                        <TextBlock x:Name="DetailSynonymsLabel"
+                                                   Text="SYNONYMS"
+                                                   FontSize="10" FontWeight="Bold"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                   Margin="0,16,0,6"/>
+                                        <TextBlock x:Name="DetailSynonymsText"
+                                                   FontSize="13"
+                                                   FontStyle="Italic"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+
+                                        <Border Height="1" Background="{DynamicResource DividerStrokeColorDefaultBrush}" Margin="0,22,0,20"/>
+
+                                        <TextBlock Text="ARABIC TRANSLATION"
+                                                   FontSize="10" FontWeight="Bold"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                   Margin="0,0,0,6"/>
+                                        <TextBlock x:Name="DetailArabicText"
+                                                   FontSize="20"
+                                                   FontWeight="SemiBold"
+                                                   FlowDirection="RightToLeft"
+                                                   TextAlignment="Right"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"/>
+
+                                        <StackPanel x:Name="DetailSentencePanel" Margin="0,20,0,0">
+                                            <TextBlock Text="IN CONTEXT"
+                                                       FontSize="10" FontWeight="Bold"
+                                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                       Margin="0,0,0,6"/>
+                                            <TextBlock x:Name="DetailSentenceText"
+                                                       FontSize="12"
+                                                       TextWrapping="Wrap"
+                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                       Margin="0,0,0,6"/>
+                                            <TextBlock x:Name="DetailTranslatedSentenceText"
+                                                       FontSize="14"
+                                                       FlowDirection="RightToLeft"
+                                                       TextAlignment="Right"
+                                                       TextWrapping="Wrap"
+                                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                        </StackPanel>
+
+                                        <TextBlock x:Name="DetailTimestampText"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                   Margin="0,26,0,0"/>
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Grid>
+
+                <!-- ===================== SETTINGS PAGE ===================== -->
+                <Grid x:Name="SettingsPage" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Margin="0,0,0,14">
+                        <TextBlock Text="Settings"
+                                   FontSize="24"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <TextBlock Text="Configure how Tarjem translates and starts up"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   Margin="0,2,0,0"/>
+                    </StackPanel>
+
+                    <WrapPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,14">
+                        <RadioButton x:Name="SettingsTabGeneral"
+                                     GroupName="SettingsTabs"
+                                     IsChecked="True"
+                                     Style="{StaticResource SettingsTabStyle}"
+                                     Checked="SettingsTabGeneral_Checked">
+                            <RadioButton.Content>
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon Symbol="Settings24" FontSize="15" Margin="0,0,7,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="General" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton.Content>
+                        </RadioButton>
+                        <RadioButton x:Name="SettingsTabLanguages"
+                                     GroupName="SettingsTabs"
+                                     Style="{StaticResource SettingsTabStyle}"
+                                     Checked="SettingsTabLanguages_Checked">
+                            <RadioButton.Content>
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon Symbol="LocalLanguage24" FontSize="15" Margin="0,0,7,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Languages" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton.Content>
+                        </RadioButton>
+                        <RadioButton x:Name="SettingsTabOverlays"
+                                     GroupName="SettingsTabs"
+                                     Style="{StaticResource SettingsTabStyle}"
+                                     Checked="SettingsTabOverlays_Checked">
+                            <RadioButton.Content>
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon Symbol="Layer24" FontSize="15" Margin="0,0,7,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Overlays" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton.Content>
+                        </RadioButton>
+                        <RadioButton x:Name="SettingsTabApis"
+                                     GroupName="SettingsTabs"
+                                     Style="{StaticResource SettingsTabStyle}"
+                                     Checked="SettingsTabApis_Checked">
+                            <RadioButton.Content>
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon Symbol="Cloud24" FontSize="15" Margin="0,0,7,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="APIs" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton.Content>
+                        </RadioButton>
+                    </WrapPanel>
+
+                    <Grid Grid.Row="2">
+                        <!-- ============= GENERAL ============= -->
+                        <Grid x:Name="SettingsGeneralPage" Visibility="Visible">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel MaxWidth="1000" HorizontalAlignment="Stretch">
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Power24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Start with Windows" FontWeight="Medium"/>
+                                                <TextBlock Text="Launch Tarjem automatically when you sign in"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="StartWithWindowsToggle" Checked="StartWithWindowsToggle_Changed" Unchecked="StartWithWindowsToggle_Changed"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="ArrowMinimize24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Start minimized" FontWeight="Medium"/>
+                                                <TextBlock Text="Start directly in the system tray instead of opening this window"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="StartMinimizedToggle"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="DarkTheme24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Appearance" FontWeight="Medium"/>
+                                                <TextBlock Text="Applies to this window and the translation popup."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ComboBox x:Name="ThemeCombo" Width="170"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Highlight24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Button when you select text" FontWeight="Medium"/>
+                                                <TextBlock Text="Select text anywhere - a browser, a PDF, a document - and a small Tarjem button appears beside it. Click it to translate the selection. More accurate than reading the screen, since it works from the real text rather than from pixels."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="SelectionPopupToggle"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="ArrowSync20"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Check for updates" FontWeight="Medium"/>
+                                                <TextBlock Text="Looks once per launch for a newer release and mentions it here. Never downloads or installs anything by itself."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="CheckForUpdatesToggle"/>
+                                    </ui:CardControl>
+
+                                    <Border x:Name="UpdateNoticePanel"
+                                            Visibility="Collapsed"
+                                            Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                                            CornerRadius="6"
+                                            Padding="12,10"
+                                            Margin="0,0,0,8">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="UpdateNoticeText"
+                                                       Grid.Column="0"
+                                                       VerticalAlignment="Center"
+                                                       TextWrapping="Wrap"
+                                                       FontSize="12"/>
+                                            <ui:Button Grid.Column="1"
+                                                       Content="View release"
+                                                       Appearance="Primary"
+                                                       Margin="12,0,0,0"
+                                                       Click="UpdateNoticeButton_Click"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Keyboard24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Translate hotkey" FontWeight="Medium"/>
+                                                <TextBlock Text="Press anywhere to translate the word under your cursor"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:Button x:Name="WordHotkeyButton"
+                                                   Content="Alt + Q"
+                                                   MinWidth="150"
+                                                   HorizontalContentAlignment="Center"
+                                                   Click="WordHotkeyButton_Click"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Crop24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Region translate hotkey" FontWeight="Medium"/>
+                                                <TextBlock Text="Drag to select a region on screen - all text inside gets translated. Press Esc, or click anywhere, to cancel."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:Button x:Name="RegionHotkeyButton"
+                                                   Content="Alt + W"
+                                                   MinWidth="150"
+                                                   HorizontalContentAlignment="Center"
+                                                   Click="RegionHotkeyButton_Click"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="BookQuestionMark24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="&quot;What is this?&quot; hotkey" FontWeight="Medium"/>
+                                                <TextBlock Text="Asks Wikipedia what the word under your cursor actually is - for company names, products, places and people that no dictionary has an entry for."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:Button x:Name="ExplainHotkeyButton"
+                                                   Content="Alt + E"
+                                                   MinWidth="150"
+                                                   HorizontalContentAlignment="Center"
+                                                   Click="ExplainHotkeyButton_Click"/>
+                                    </ui:CardControl>
+
+                                    <Grid Margin="2,-2,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock x:Name="HotkeyStatusText"
+                                                   Grid.Column="0"
+                                                   FontSize="11.5"
+                                                   TextWrapping="Wrap"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                   Text="Click a shortcut to change it. Esc cancels."/>
+
+                                        <ui:Button x:Name="ResetHotkeysButton"
+                                                   Grid.Column="1"
+                                                   Content="Reset to defaults"
+                                                   Appearance="Secondary"
+                                                   Icon="{ui:SymbolIcon ArrowReset24}"
+                                                   Margin="12,0,0,0"
+                                                   Click="ResetHotkeysButton_Click"/>
+                                    </Grid>
+
+                                    <TextBlock Text="Data"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Margin="2,14,0,6"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="History24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Save lookup history" FontWeight="Medium"/>
+                                                <TextBlock Text="Keeps every word you look up so you can review it later. Turn this off to stop recording lookups entirely - the History page and its tray menu entry are hidden too."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="HistoryEnabledToggle" Checked="HistoryEnabled_Changed" Unchecked="HistoryEnabled_Changed"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Folder24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Where Tarjem keeps things" FontWeight="Medium"/>
+                                                <TextBlock Text="Settings, history and encrypted keys, plus seven days of logs — useful when something needs reporting."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <StackPanel Orientation="Horizontal">
+                                            <ui:Button Content="Open data folder"
+                                                       Appearance="Secondary"
+                                                       Click="OpenDataFolder_Click"/>
+                                            <ui:Button Content="Open logs"
+                                                       Appearance="Secondary"
+                                                       Margin="8,0,0,0"
+                                                       Click="OpenLogsFolder_Click"/>
+                                        </StackPanel>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Delete24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Clear all data" FontWeight="Medium"/>
+                                                <TextBlock Text="Erases your lookup history and resets every setting (including API keys) back to defaults. Cannot be undone."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:Button x:Name="ClearDataButton"
+                                                   Content="Clear data..."
+                                                   Icon="{ui:SymbolIcon Delete24}"
+                                                   Appearance="Danger"
+                                                   Click="ClearDataButton_Click"/>
+                                    </ui:CardControl>
+
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+
+                        <!-- ============= LANGUAGES ============= -->
+                        <Grid x:Name="SettingsLanguagesPage" Visibility="Collapsed">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel MaxWidth="1000" HorizontalAlignment="Stretch">
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="ScanText24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Source language (OCR)" FontWeight="Medium"/>
+                                                <TextBlock Text="Which language Tarjem reads off your screen. Needs that language's Windows OCR pack installed (Settings > Time &amp; language > Language)."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ComboBox x:Name="SourceLanguageCombo"
+                                                  ItemTemplate="{StaticResource LanguageItemTemplate}"
+                                                  Width="170"
+                                                  SelectionChanged="SourceLanguageCombo_SelectionChanged"/>
+                                    </ui:CardControl>
+
+                                    <TextBlock x:Name="SourceLanguagePackMissingText"
+                                               Foreground="#FFE0A030"
+                                               FontSize="11.5"
+                                               FontWeight="Medium"
+                                               TextWrapping="Wrap"
+                                               MaxWidth="600"
+                                               Margin="4,-2,0,4"
+                                               Visibility="Collapsed"
+                                               Text="This language's Windows OCR pack doesn't seem to be installed - lookups will fall back to English until you install it (Settings > Time &amp; language > Language, then 'Add a language')."/>
+
+                                    <TextBlock x:Name="SourceLanguageNoteText"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               FontSize="11.5"
+                                               TextWrapping="Wrap"
+                                               MaxWidth="600"
+                                               Margin="4,-2,0,10"
+                                               Visibility="Collapsed"
+                                               Text="English has the best free-API support for definitions right now - other languages currently fall back to Gemini only for definitions (translation still uses whichever provider you picked in the APIs tab). Wider support may come in a future update."/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Search24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Auto-detect source language" FontWeight="Medium"/>
+                                                <TextBlock Text="Try every installed OCR language on each lookup and keep whichever recognized the most text, instead of assuming the language above. Slower per-lookup since it runs multiple OCR passes."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="AutoDetectSourceLanguageToggle" Checked="AutoDetectSourceLanguageToggle_Changed" Unchecked="AutoDetectSourceLanguageToggle_Changed"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Globe24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Translation language" FontWeight="Medium"/>
+                                                <TextBlock Text="Which language words get translated into."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ComboBox x:Name="TargetLanguageCombo"
+                                                  ItemTemplate="{StaticResource LanguageItemTemplate}"
+                                                  Width="170"
+                                                  SelectionChanged="TargetLanguageCombo_SelectionChanged"/>
+                                    </ui:CardControl>
+
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+
+                        <!-- ============= APIS ============= -->
+                        <Grid x:Name="SettingsApisPage" Visibility="Collapsed">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel MaxWidth="1000" HorizontalAlignment="Stretch">
+
+                                    <!-- Sources. Each carries its own status dot: a single global
+                                         "test connection" button could only ever report on one
+                                         provider, which stopped being useful the moment there
+                                         were six of them and a failover chain between them. -->
+                                    <TextBlock Text="Sources"
+                                               FontSize="13" FontWeight="SemiBold"
+                                               Margin="2,10,0,6"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Book24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Definition source" FontWeight="Medium"/>
+                                                <TextBlock Text="What the popup shows first when you look up a word. If it can't answer, Tarjem quietly tries the next source rather than failing - your choice here is never changed."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <StackPanel Orientation="Horizontal">
+                                            <ComboBox x:Name="DefaultDictionaryProviderCombo"
+                                                      Width="170"
+                                                      SelectionChanged="DefaultDictionaryProviderCombo_SelectionChanged"/>
+                                            <Button x:Name="DictionaryProbeButton"
+                                                    Width="30" Height="30"
+                                                    Margin="6,0,0,0"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Cursor="Hand"
+                                                    ToolTip="Check this source"
+                                                    Click="DictionaryProbeButton_Click">
+                                                <Border x:Name="DictionaryProbeDot"
+                                                        Width="10" Height="10"
+                                                        CornerRadius="5"
+                                                        Background="#FF9E9E9E"/>
+                                            </Button>
+                                        </StackPanel>
+                                    </ui:CardControl>
+
+                                    <TextBlock x:Name="DictionaryProviderNoteText"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               FontSize="11.5"
+                                               TextWrapping="Wrap"
+                                               MaxWidth="600"
+                                               Margin="4,-2,0,10"
+                                               Visibility="Collapsed"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="ArrowSwap24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Translation source" FontWeight="Medium"/>
+                                                <TextBlock Text="What the popup and the region overlay use first. The keyless sources are instant; the AI ones rewrite a sentence the way a native speaker would say it instead of translating word by word."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <StackPanel Orientation="Horizontal">
+                                            <ComboBox x:Name="DefaultTranslationProviderCombo"
+                                                      Width="170"
+                                                      SelectionChanged="DefaultTranslationProviderCombo_SelectionChanged"/>
+                                            <Button x:Name="TranslationProbeButton"
+                                                    Width="30" Height="30"
+                                                    Margin="6,0,0,0"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Cursor="Hand"
+                                                    ToolTip="Check this source"
+                                                    Click="TranslationProbeButton_Click">
+                                                <Border x:Name="TranslationProbeDot"
+                                                        Width="10" Height="10"
+                                                        CornerRadius="5"
+                                                        Background="#FF9E9E9E"/>
+                                            </Button>
+                                        </StackPanel>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="BookQuestionMark24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Encyclopedia source" FontWeight="Medium"/>
+                                                <TextBlock Text="What the &quot;What is this?&quot; hotkey asks first, and what answers when no dictionary has an entry. The wikis are keyless and citable; the AI sources sit behind them for names no wiki carries, and answer from the model's memory rather than from a page."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <StackPanel Orientation="Horizontal">
+                                            <ComboBox x:Name="DefaultEncyclopediaProviderCombo"
+                                                      Width="170"
+                                                      SelectionChanged="DefaultEncyclopediaProviderCombo_SelectionChanged"/>
+                                            <Button x:Name="EncyclopediaProbeButton"
+                                                    Width="30" Height="30"
+                                                    Margin="6,0,0,0"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Cursor="Hand"
+                                                    ToolTip="Check this source"
+                                                    Click="EncyclopediaProbeButton_Click">
+                                                <Border x:Name="EncyclopediaProbeDot"
+                                                        Width="10" Height="10"
+                                                        CornerRadius="5"
+                                                        Background="#FF9E9E9E"/>
+                                            </Button>
+                                        </StackPanel>
+                                    </ui:CardControl>
+
+                                    <TextBlock x:Name="EncyclopediaProviderNoteText"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               FontSize="11.5"
+                                               TextWrapping="Wrap"
+                                               MaxWidth="600"
+                                               Margin="4,-2,0,10"
+                                               Visibility="Collapsed"/>
+
+                                    <TextBlock x:Name="ProbeResultText"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               FontSize="11.5"
+                                               TextWrapping="Wrap"
+                                               MaxWidth="600"
+                                               Margin="4,-2,0,10"
+                                               Visibility="Collapsed"/>
+
+                                    <!-- Keys. All optional: the app ships with free ones, and
+                                         these only exist for when a shared key is running slow. -->
+                                    <TextBlock Text="Your own API keys"
+                                               FontSize="13" FontWeight="SemiBold"
+                                               Margin="2,10,0,2"/>
+                                    <TextBlock Text="Every AI source below already works without a key - Tarjem ships free ones that everyone shares. Add your own only if a shared key feels slow; yours is used instead, and never leaves this machine."
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               FontSize="12"
+                                               TextWrapping="Wrap"
+                                               MaxWidth="600"
+                                               Margin="2,0,0,8"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Key24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Gemini" FontWeight="Medium"/>
+                                                <TextBlock Text="Best overall quality. Free key at aistudio.google.com/apikey"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:PasswordBox x:Name="ApiKeyBox"
+                                                        Width="220"
+                                                        PasswordChar="&#x25CF;"
+                                                        RevealButtonEnabled="False"
+                                                        PlaceholderText="Using the shared key"
+                                                        PasswordChanged="ApiKeyBox_PasswordChanged"/>
+                                    </ui:CardControl>
+
+                                    <local:KeyStatusRow x:Name="GeminiKeyStatus"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Flash24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Groq" FontWeight="Medium"/>
+                                                <TextBlock Text="The fastest AI translation available. Free key, no card, at console.groq.com/keys"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:PasswordBox x:Name="GroqApiKeyBox"
+                                                        Width="220"
+                                                        PasswordChar="&#x25CF;"
+                                                        RevealButtonEnabled="False"
+                                                        PlaceholderText="Optional"
+                                                        PasswordChanged="GroqApiKeyBox_PasswordChanged"/>
+                                    </ui:CardControl>
+
+                                    <local:KeyStatusRow x:Name="GroqKeyStatus"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Server24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Cerebras" FontWeight="Medium"/>
+                                                <TextBlock Text="1 million tokens a day. Free key, no card, at cloud.cerebras.ai"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:PasswordBox x:Name="CerebrasApiKeyBox"
+                                                        Width="220"
+                                                        PasswordChar="&#x25CF;"
+                                                        RevealButtonEnabled="False"
+                                                        PlaceholderText="Optional"
+                                                        PasswordChanged="CerebrasApiKeyBox_PasswordChanged"/>
+                                    </ui:CardControl>
+
+                                    <local:KeyStatusRow x:Name="CerebrasKeyStatus"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Key24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Merriam-Webster" FontWeight="Medium"/>
+                                                <TextBlock Text="Authoritative American English definitions. Free key at dictionaryapi.com/register"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:PasswordBox x:Name="MerriamWebsterApiKeyBox"
+                                                        Width="220"
+                                                        PasswordChar="&#x25CF;"
+                                                        RevealButtonEnabled="False"
+                                                        PlaceholderText="Optional"
+                                                        PasswordChanged="MerriamWebsterApiKeyBox_PasswordChanged"/>
+                                    </ui:CardControl>
+
+                                    <local:KeyStatusRow x:Name="MerriamWebsterKeyStatus"/>
+
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+
+                        <!-- ============= OVERLAYS ============= -->
+                        <Grid x:Name="SettingsOverlaysPage" Visibility="Collapsed">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel MaxWidth="1000" HorizontalAlignment="Stretch">
+
+                                    <!-- The style is one decision that governs both result cards, so
+                                         it sits above either of their sections rather than inside
+                                         the one that happens to be listed first. -->
+                                    <TextBlock Text="Appearance"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Margin="2,0,0,6"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="PaintBrush24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Popup style" FontWeight="Medium"/>
+                                                <TextBlock Text="How both result cards look — the word popup and the &quot;what is this?&quot; card. Minimal is plain and quiet, Fluent wears your Windows accent colour, and Glass is translucent over a blur of whatever is behind it."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ComboBox x:Name="PopupStyleComboBox"
+                                                  Width="170"
+                                                 >
+                                            <ComboBoxItem Content="Minimal" Tag="Minimal" IsSelected="True"/>
+                                            <ComboBoxItem Content="Fluent" Tag="Fluent"/>
+                                            <ComboBoxItem Content="Glass" Tag="Glass"/>
+                                        </ComboBox>
+                                    </ui:CardControl>
+
+                                    <TextBlock Text="Word popup (Alt + Q)"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Margin="2,14,0,6"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Translate24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Show the translation" FontWeight="Medium"/>
+                                                <TextBlock Text="The whole sentence, rewritten in your language, with the word you looked up highlighted inside it. Turning this off also stops Tarjem requesting it, so lookups get faster."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="ShowTranslationSectionToggle" Checked="PopupSectionToggle_Changed" Unchecked="PopupSectionToggle_Changed"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Book24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Show the definition" FontWeight="Medium"/>
+                                                <TextBlock Text="What the word means in its own language, with its level, pronunciation and synonyms."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="ShowDictionarySectionToggle" Checked="PopupSectionToggle_Changed" Unchecked="PopupSectionToggle_Changed"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="TextWordCount24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Show the word on its own" FontWeight="Medium"/>
+                                                <TextBlock Text="Puts just the translated word right beside the original, for when you don't need to read the whole sentence."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="ShowInlineWordTranslationToggle"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Highlight24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Draw the word over the screen" FontWeight="Medium"/>
+                                                <TextBlock Text="Shows the translated word on top of the highlighted one, the way the region overlay covers the text it replaces - so the answer appears where you're already looking."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="ShowWordOverlayToggle"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Globe24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Explain names" FontWeight="Medium"/>
+                                                <TextBlock Text="When no dictionary has an entry - NVIDIA, a character name, a product - look the name up and say what it is instead of showing 'not found'."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="EncyclopediaFallbackToggle"/>
+                                    </ui:CardControl>
+
+                                    <!-- ===== "What is this?" (Alt + E) ===== -->
+                                    <TextBlock Text="&quot;What is this?&quot; card (Alt + E)"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Margin="2,14,0,2"/>
+
+                                    <TextBlock Text="What Alt + E shows when you ask it about a name — a company, a product, a place, a character — that no dictionary carries. The hotkey itself is on the General tab."
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               FontSize="12"
+                                               TextWrapping="Wrap"
+                                               MaxWidth="600"
+                                               Margin="2,0,0,6"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="TextParagraph24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Answer length" FontWeight="Medium"/>
+                                                <TextBlock Text="How much of the article to show. Short is a line or two; Full is the whole opening paragraph. A longer answer also takes longer to translate."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ComboBox x:Name="ExplainAnswerLengthCombo" Width="170">
+                                            <ComboBoxItem Content="Short" Tag="Short"/>
+                                            <ComboBoxItem Content="Standard" Tag="Standard" IsSelected="True"/>
+                                            <ComboBoxItem Content="Full" Tag="Full"/>
+                                        </ComboBox>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Translate24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Translate the answer" FontWeight="Medium"/>
+                                                <TextBlock Text="Also show the answer in your language. Turning this off skips the translation request entirely, which is most of what Alt + E spends its time waiting on."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="ExplainTranslateAnswerToggle" Checked="ExplainTranslateAnswerToggle_Changed" Unchecked="ExplainTranslateAnswerToggle_Changed"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl x:Name="ExplainShowOriginalCard" Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="TextColumnOneNarrow24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Keep the original above the translation" FontWeight="Medium"/>
+                                                <TextBlock Text="With this off, the translated answer replaces the original instead of sitting under it — a shorter card, when you don't need to read both."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="ExplainShowOriginalToggle"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Link24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Show &quot;Read more&quot;" FontWeight="Medium"/>
+                                                <TextBlock Text="Offer a button that opens the full Wikipedia or Wikidata page in your browser."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="ExplainShowSourceLinkToggle"/>
+                                    </ui:CardControl>
+
+                                    <TextBlock Text="Region overlay (Alt + W)"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Margin="2,14,0,6"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="TextFontSize24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Translated text size" FontWeight="Medium"/>
+                                                <TextBlock Text="Match original reads the size of the text it just replaced, so the translation blends into the app. Fill region makes it as large as the selection allows."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ComboBox x:Name="RegionFontSizeModeCombo"
+                                                  Width="170"
+                                                 >
+                                            <ComboBoxItem Content="Match original" Tag="MatchOriginal" IsSelected="True"/>
+                                            <ComboBoxItem Content="Fill region" Tag="FitRegion"/>
+                                        </ComboBox>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="TextParagraph24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Show original text" FontWeight="Medium"/>
+                                                <TextBlock Text="Show the text that was recognized above the translation, in smaller muted type"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="RegionShowOriginalToggle"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Color24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Match the scene" FontWeight="Medium"/>
+                                                <TextBlock Text="Tints the overlay with colors taken from whatever is behind it, so translated text sits inside the game's own look instead of on a card dropped on top of it."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="RegionMatchesSceneThemeToggle"/>
+                                    </ui:CardControl>
+
+                                    <TextBlock Text="Both overlays"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Margin="2,14,0,6"/>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="WeatherMoon24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Dim the screen behind overlays" FontWeight="Medium"/>
+                                                <TextBlock Text="Darkens everything else slightly while a translation is on screen, which also makes it obvious that clicking anywhere dismisses it"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="DimBehindOverlaysToggle"/>
+                                    </ui:CardControl>
+
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+                    </Grid>
+                </Grid>
+
+                <!-- ===================== ABOUT PAGE ===================== -->
+                <Grid x:Name="AboutPage" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Margin="0,0,0,18">
+                        <TextBlock Text="About"
+                                   FontSize="24"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <TextBlock Text="App details, credits and what Tarjem is built on"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   Margin="0,2,0,0"/>
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <StackPanel MaxWidth="640" HorizontalAlignment="Left">
+
+                            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
+                                    Padding="20"
+                                    Margin="0,0,0,20">
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:ImageIcon Source="pack://application:,,,/Tarjem;component/Assets/icon.ico" Width="48" Height="48" Margin="0,0,16,0"/>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="Tarjem" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                        <TextBlock x:Name="AboutVersionText" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0"/>
+                                        <TextBlock Text="&quot;Tarjem&quot; (ترجم) is Tunisian Arabic for &quot;Translate&quot; (imperative)"
+                                                   FontSize="11"
+                                                   FontStyle="Italic"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                   Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock Text="FRAMEWORKS &amp; LIBRARIES"
+                                       FontSize="11"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                       Margin="2,0,0,8"/>
+
+                            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
+                                    Padding="6"
+                                    Margin="0,0,0,20">
+                                <ItemsControl x:Name="LibraryList">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                                                    CornerRadius="5"
+                                                    Padding="9,4"
+                                                    Margin="4">
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Border>
+
+                            <TextBlock Text="EXTERNAL APIS &amp; SERVICES"
+                                       FontSize="11"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                       Margin="2,0,0,8"/>
+
+                            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
+                                    Padding="6"
+                                    Margin="0,0,0,20">
+                                <ItemsControl x:Name="ApiList">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                                                    CornerRadius="5"
+                                                    Padding="9,4"
+                                                    Margin="4">
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Border>
+
+                            <TextBlock Text="DEVELOPER"
+                                       FontSize="11"
+                                       FontWeight="Bold"
+                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                       Margin="2,0,0,8"/>
+
+                            <ui:CardControl Margin="0,0,0,20">
+                                <ui:CardControl.Icon>
+                                    <ui:SymbolIcon Symbol="PersonCircle24"/>
+                                </ui:CardControl.Icon>
+                                <ui:CardControl.Header>
+                                    <StackPanel>
+                                        <TextBlock Text="KiraiEEE" FontWeight="Medium"/>
+                                        <TextBlock FontSize="12"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                   Margin="0,2,0,0">
+                                            <Hyperlink NavigateUri="https://kiraieee.github.io"
+                                                       RequestNavigate="Hyperlink_RequestNavigate">
+                                                <Run Text="kiraieee.github.io"/>
+                                            </Hyperlink>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </ui:CardControl.Header>
+                            </ui:CardControl>
+
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+            </Grid>
+        </Grid>
+    </Grid>
+</ui:FluentWindow>
