@@ -35,6 +35,10 @@ public partial class OverlayWindow : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         var extendedStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
         SetWindowLong(hwnd, GWL_EXSTYLE, extendedStyle | WS_EX_NOACTIVATE);
+
+        // The dim and highlight must never be photographed by the next hotkey's capture - see
+        // ScreenCaptureGuard for how that greyed out the whole screen.
+        Services.ScreenCaptureGuard.ExcludeFromCapture(hwnd);
     }
 
     /// <summary>The monitor this overlay is currently covering. Everything inside is positioned

@@ -11,7 +11,10 @@
         Cursor="Cross"
         Left="0" Top="0"
         Width="1" Height="1">
-    <Grid>
+    <!-- Never fully transparent: a layered window lets clicks fall through wherever its alpha is
+         zero. Over the live screen (blank capture) with dimming off, both layers below are at 0
+         opacity, and without this the drag went to the app underneath instead of drawing a box. -->
+    <Grid Background="#01000000">
         <!-- Frozen screenshot background -->
         <Image x:Name="ScreenshotBg"
                Stretch="UniformToFill"

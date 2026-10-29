@@ -10,6 +10,17 @@ public class OverlayService
     private PopupWindow? _popup;
     private ExplainWindow? _explain;
 
+    /// <summary>Escape dismisses the word overlay. Its windows are WS_EX_NOACTIVATE so they never
+    /// get keyboard input of their own, which left clicking as the only way out - and a dimmed
+    /// screen that didn't seem to respond read as the app having frozen it.</summary>
+    private EscapeWatcher? _escapeWatcher;
+
+    /// <summary>Windows already fading out. A fade nulls its field first and closes later, so
+    /// without this list an immediate dismissal could neither reach them nor report that
+    /// anything was still on screen - which skipped the compositor wait and let the half-faded
+    /// card be photographed straight into Alt+W's selection screenshot.</summary>
+    private readonly List<Window> _closing = new();
+
     /// <summary>Raised with text Tarjem itself copied, so the clipboard watcher can ignore it.</summary>
     public event EventHandler<string>? TextCopied;
 
@@ -41,6 +52,11 @@ public class OverlayService
             _overlay.Clicked += (_, _) => DismissAll();
             _overlay.CoverMonitorFor(wordRectPhysical);
             _overlay.Show();
+
+            _escapeWatcher?.Dispose();
+            _escapeWatcher = new EscapeWatcher();
+            _escapeWatcher.Pressed += (_, _) => DismissAll();
+            _escapeWatcher.Start();
         }
 
         _overlay.SetHighlight(wordRectPhysical);
@@ -208,6 +224,7 @@ public class OverlayService
 
         var explain = _explain;
         _explain = null;
+        TrackClosing(explain);
         explain.CloseAnimated();
     }
 
@@ -217,20 +234,70 @@ public class OverlayService
         {
             var popup = _popup;
             _popup = null;
+            TrackClosing(popup);
             popup.CloseAnimated();
         }
     }
 
-    public void DismissAll()
+    /// <param name="immediate">Close everything at once instead of fading out. Used when another
+    /// hotkey is about to photograph the screen: a fade takes 140 ms, and a capture taken inside
+    /// it froze the half-faded dim and card into Alt+W's selection screenshot.</param>
+    /// <returns>True if anything was on screen to take down.</returns>
+    public bool DismissAll(bool immediate = false)
     {
-        HideExplain();
-        HidePopup();
-        if (_overlay != null)
+        var hadSomething = _overlay != null || _popup != null || _explain != null || _closing.Count > 0;
+
+        _escapeWatcher?.Dispose();
+        _escapeWatcher = null;
+
+        if (immediate)
         {
-            var overlay = _overlay;
-            _overlay = null;
-            overlay.HideDim(() => overlay.Close());
+            CloseNow(ref _explain);
+            CloseNow(ref _popup);
+            CloseNow(ref _overlay);
+            CloseFading();
         }
+        else
+        {
+            HideExplain();
+            HidePopup();
+            if (_overlay != null)
+            {
+                var overlay = _overlay;
+                _overlay = null;
+                TrackClosing(overlay);
+                overlay.HideDim(() => overlay.Close());
+            }
+        }
+
         Dismissed?.Invoke(this, EventArgs.Empty);
+        return hadSomething;
+    }
+
+    private void TrackClosing(Window window)
+    {
+        if (_closing.Contains(window)) return;
+        _closing.Add(window);
+        window.Closed += (_, _) => _closing.Remove(window);
+    }
+
+    /// <summary>Force-closes everything that is mid-fade, so the screen really is clear by the
+    /// time a capture runs.</summary>
+    private void CloseFading()
+    {
+        if (_closing.Count == 0) return;
+
+        foreach (var window in _closing.ToArray())
+        {
+            try { window.Close(); } catch { }
+        }
+        _closing.Clear();
+    }
+
+    private static void CloseNow<T>(ref T? window) where T : Window
+    {
+        var w = window;
+        window = null;
+        try { w?.Close(); } catch { }
     }
 }

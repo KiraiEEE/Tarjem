@@ -41,6 +41,40 @@ public class TranslationService
     public static (string Id, string Label)[] EncyclopediaProviders =>
         ProviderCatalog.OfKind(ProviderKind.Encyclopedia).OrderBy(p => p.Rank).Select(p => (p.Id, p.Label)).ToArray();
 
+    /// <summary>The <see cref="AppSettings.RegionTranslationProvider"/> value meaning "pick for me".</summary>
+    public const string AutoRegionProvider = "auto";
+
+    /// <summary>Sources that translate by rewriting rather than by mapping - the only ones the
+    /// prompts in <see cref="TranslationPrompts"/> reach.</summary>
+    private static readonly HashSet<string> AiProviders = new(StringComparer.OrdinalIgnoreCase) { "gemini", "groq", "cerebras" };
+
+    public static bool IsAiProvider(string? providerId) => providerId != null && AiProviders.Contains(providerId);
+
+    /// <summary>What the Alt+W source picker in Settings offers: the automatic choice, then every
+    /// translation source.</summary>
+    public static (string Id, string Label)[] RegionTranslationSources =>
+        new[] { (AutoRegionProvider, "Best available (AI when possible)") }.Concat(TranslationProviders).ToArray();
+
+    /// <summary>
+    /// The source Alt+W should translate with right now. An explicit choice is always honoured;
+    /// "auto" takes the best-ranked AI source that has a key, and only falls back to the ordinary
+    /// default (Google, out of the box) when none does.
+    /// </summary>
+    public string ResolveRegionProvider()
+    {
+        var settings = _settingsService.Current;
+
+        if (!string.IsNullOrEmpty(settings.RegionTranslationProvider) &&
+            settings.RegionTranslationProvider != AutoRegionProvider)
+            return settings.RegionTranslationProvider;
+
+        var (targetCode, _) = GetTargetLanguage();
+        var ai = ProviderCatalog.Usable(ProviderKind.Translation, targetCode, HasKey).FirstOrDefault(p => IsAiProvider(p.Id));
+        if (ai != null) return ai.Id;
+
+        return string.IsNullOrEmpty(settings.DefaultTranslationProvider) ? "google" : settings.DefaultTranslationProvider;
+    }
+
     /// <summary>Languages the translation section can target. IsRtl drives the popup's text
     /// flow direction for whichever language is currently selected.
     ///

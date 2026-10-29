@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Windows.Interop;
 using Microsoft.Win32;
 using Serilog;
 
@@ -36,20 +38,71 @@ public static class ThemeService
         _ => IsWindowsDark(),
     };
 
-    /// <summary>Applies <paramref name="preference"/> to the WPF-UI theme manager and remembers it
-    /// for everything that asks later.</summary>
+    /// <summary>Whether the theme last handed to WPF-UI was dark; null before the first apply.</summary>
+    private static bool? _appliedDark;
+
+    private const int DWMWA_SYSTEMBACKDROP_TYPE = 38;
+    private const int DWMSBT_NONE = 1;
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    /// <summary>
+    /// Applies <paramref name="preference"/> to the WPF-UI theme manager and remembers it for
+    /// everything that asks later.
+    ///
+    /// WPF-UI applies a Mica backdrop to <em>every</em> open window when the theme is applied, and
+    /// on a transparent window that backdrop is drawn in all the transparent area - for the
+    /// full-screen overlays, the whole monitor turned solid #202020 (or #F3F3F3 in light mode).
+    /// This used to run on every settings save, and Gemini saves its model health after every
+    /// request, so any Gemini answer landing while an overlay was open greyed out the screen. Hence
+    /// both guards: only re-apply when the theme actually changes, and strip the backdrop back off
+    /// our transparent windows when it does.
+    /// </summary>
     public static void Apply(string? preference)
     {
         Preference = preference is Light or Dark or System ? preference : System;
 
+        var dark = IsDark;
+        if (_appliedDark == dark) return;
+        _appliedDark = dark;
+
         try
         {
             Wpf.Ui.Appearance.ApplicationThemeManager.Apply(
-                IsDark ? Wpf.Ui.Appearance.ApplicationTheme.Dark : Wpf.Ui.Appearance.ApplicationTheme.Light);
+                dark ? Wpf.Ui.Appearance.ApplicationTheme.Dark : Wpf.Ui.Appearance.ApplicationTheme.Light);
         }
         catch (Exception ex)
         {
             Log.Warning(ex, "Failed to apply the {Theme} theme", Preference);
+        }
+
+        RemoveBackdropFromTransparentWindows();
+    }
+
+    /// <summary>Turns the DWM system backdrop back off on every transparent window - the overlays
+    /// and the popup cards. They draw their own backgrounds; a backdrop behind them only ever
+    /// shows up as an opaque slab where they are meant to be see-through.</summary>
+    private static void RemoveBackdropFromTransparentWindows()
+    {
+        if (global::System.Windows.Application.Current is not { } app) return;
+
+        foreach (global::System.Windows.Window window in app.Windows)
+        {
+            if (!window.AllowsTransparency) continue;
+
+            var hwnd = new WindowInteropHelper(window).Handle;
+            if (hwnd == IntPtr.Zero) continue;
+
+            try
+            {
+                var none = DWMSBT_NONE;
+                DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, ref none, sizeof(int));
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Could not clear the backdrop from a transparent window");
+            }
         }
     }
 

@@ -55,44 +55,62 @@ public class RegionTranslationService : IDisposable
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
 
-        // Close any existing windows
+        // Close any existing windows - at once, not with a fade, and make sure they are gone
+        // from the screen before it is photographed. The new selection freezes a screenshot, and
+        // one taken with the last overlay still on screen froze that overlay's dim into it.
+        var closedSomething = _selectionWindow != null || _overlayWindow != null;
         CloseSelectionWindow();
         CloseOverlayWindow();
+        if (closedSomething)
+            ScreenCaptureGuard.WaitForCompositor();
 
-        _selectionWindow = new RegionSelectionWindow();
-        _selectionWindow.RegionSelected += async (_, rect) =>
+        var selection = new RegionSelectionWindow();
+        _selectionWindow = selection;
+        selection.RegionSelected += async (_, rect) =>
         {
+            if (!ReferenceEquals(selection, _selectionWindow)) return;
+
             // Crop from the frozen screenshot before the selection window goes away, so what
             // gets OCR'd is the desktop as it looked when the user drew the box.
-            var regionBitmap = _selectionWindow?.CropRegion(rect);
+            var regionBitmap = selection.CropRegion(rect);
             CloseSelectionWindow();
             await ProcessRegionAsync(rect, regionBitmap, ct);
         };
-        _selectionWindow.SelectionCancelled += (_, _) =>
+        selection.SelectionCancelled += (_, _) =>
         {
+            if (!ReferenceEquals(selection, _selectionWindow)) return;
             StopEscapeWatcher();
             CloseSelectionWindow();
         };
 
         // Escape cancels. The selection window is WS_EX_NOACTIVATE so it never gets keyboard
         // input of its own - the watcher reads the key state globally instead.
-        StartEscapeWatcher(Cancel);
+        StartEscapeWatcher(() => Cancel());
 
-        _selectionWindow.ShowWithScreenshot();
+        selection.ShowWithScreenshot(_settingsService.Current.DimBehindOverlays);
     }
 
     /// <summary>Cancels whatever part of the region flow is currently on screen.</summary>
-    public void Cancel()
+    /// <param name="immediate">Close at once instead of fading out - for when another hotkey is
+    /// about to capture the screen, and a fading overlay would end up in its screenshot.</param>
+    /// <returns>True if anything was on screen to take down.</returns>
+    public bool Cancel(bool immediate = false)
     {
+        var hadSomething = _selectionWindow != null || _overlayWindow != null;
+
         StopEscapeWatcher();
         _cts?.Cancel();
         CloseSelectionWindow();
 
         if (_overlayWindow != null)
         {
-            // Let the overlay fade out; its Dismissed handler clears the reference.
-            _overlayWindow.Dismiss();
+            if (immediate)
+                CloseOverlayWindow();
+            else
+                _overlayWindow.Dismiss(); // Fades out; its Dismissed handler clears the reference.
         }
+
+        return hadSomething;
     }
 
     private void StartEscapeWatcher(Action onPressed)
@@ -111,33 +129,16 @@ public class RegionTranslationService : IDisposable
 
     private async Task ProcessRegionAsync(Rect screenRegion, Bitmap? capturedRegion, CancellationToken ct)
     {
+        RegionOverlayWindow? overlay = null;
         try
         {
-            // Show overlay in loading state
-            _overlayWindow = new RegionOverlayWindow();
-            _overlayWindow.Dismissed += (_, _) =>
-            {
-                // Clicking away mid-translation should stop the lookup too, not just hide it -
-                // same contract as the Alt+Q overlay.
-                _cts?.Cancel();
-                CloseOverlayWindow();
-            };
-            _overlayWindow.ApiChanged += OnApiChanged;
-
-            var overlayOptions = _settingsService.Current;
-            _overlayWindow.ApplyOptions(
-                dimBehind: overlayOptions.DimBehindOverlays,
-                showOriginal: overlayOptions.RegionShowOriginal,
-                matchSourceFontSize: overlayOptions.RegionFontSizeMode != "FitRegion");
-
-            _overlayWindow.PositionOverRegion(screenRegion);
-            _overlayWindow.ShowLoading();
-            _overlayWindow.Show();
-
-            ct.ThrowIfCancellationRequested();
-
             // 1. The region normally comes pre-cropped from the selection window's frozen
-            //    screenshot; only fall back to a live grab if that didn't work out.
+            //    screenshot; only fall back to a live grab if that didn't work out. The live grab
+            //    has to happen *before* the overlay goes up - it used to happen after, and so
+            //    OCR'd our own "Translating..." panel instead of the text underneath it.
+            if (capturedRegion == null)
+                ScreenCaptureGuard.WaitForCompositor();
+
             var bitmap = capturedRegion ?? await CaptureRegionAsync(
                 (int)screenRegion.Left,
                 (int)screenRegion.Top,
@@ -147,12 +148,43 @@ public class RegionTranslationService : IDisposable
             if (bitmap == null || ct.IsCancellationRequested)
             {
                 bitmap?.Dispose();
-                CloseOverlayWindow();
                 return;
             }
 
+            // Show overlay in loading state. Held in a local as well as the field: every callback
+            // below checks it is still *the* overlay before touching anything, because the field
+            // moves on to a newer overlay the moment the user presses Alt+W again.
+            overlay = new RegionOverlayWindow();
+            _overlayWindow = overlay;
+            overlay.Dismissed += (_, _) =>
+            {
+                // A dismissal that finishes fading after a newer region flow has started belongs
+                // to the old overlay. Acting on it used to cancel the *new* flow and stop its
+                // Escape watcher - leaving its frozen, dimmed selection screen stuck with no way
+                // out - or close the new overlay out from under it.
+                if (!ReferenceEquals(overlay, _overlayWindow)) return;
+
+                // Clicking away mid-translation should stop the lookup too, not just hide it -
+                // same contract as the Alt+Q overlay.
+                _cts?.Cancel();
+                CloseOverlayWindow();
+            };
+            overlay.ApiChanged += OnApiChanged;
+
+            var overlayOptions = _settingsService.Current;
+            overlay.ApplyOptions(
+                dimBehind: overlayOptions.DimBehindOverlays,
+                showOriginal: overlayOptions.RegionShowOriginal,
+                matchSourceFontSize: overlayOptions.RegionFontSizeMode != "FitRegion");
+
+            overlay.PositionOverRegion(screenRegion);
+            overlay.ShowLoading();
+            overlay.Show();
+
             try
             {
+                ct.ThrowIfCancellationRequested();
+
                 // 2. OCR all text in the region
                 var settings = _settingsService.Current;
                 string sourceLanguageTag;
@@ -165,12 +197,12 @@ public class RegionTranslationService : IDisposable
                         .Where(_ocrService.IsLanguageAvailable)
                         .ToList();
 
-                    var detected = await _ocrService.DetectAndRecognizeAsync(bitmap, candidates, ct);
+                    var detected = await _ocrService.DetectAndRecognizeAsync(bitmap, candidates, settings.SourceLanguage, ct);
                     ct.ThrowIfCancellationRequested();
 
                     if (detected == null)
                     {
-                        ShowNoTextFound();
+                        ShowNoTextFound(overlay);
                         return;
                     }
 
@@ -186,15 +218,18 @@ public class RegionTranslationService : IDisposable
 
                 if (ocrResult == null || ocrResult.Lines.Count == 0)
                 {
-                    ShowNoTextFound();
+                    ShowNoTextFound(overlay);
                     return;
                 }
 
-                // 3. Build full text from all OCR lines
-                var originalText = ocrResult.AllText;
+                // 3. Build the text from the OCR lines, rejoining sentences that only wrapped on
+                //    screen. Sent row by row, a sentence split across three rows was translated as
+                //    three fragments, each forced into the source's clause order - see TextReflow.
+                var logicalLines = TextReflow.LogicalLines(ocrResult);
+                var originalText = string.Join("\n", logicalLines);
                 if (string.IsNullOrWhiteSpace(originalText))
                 {
-                    ShowNoTextFound();
+                    ShowNoTextFound(overlay);
                     return;
                 }
 
@@ -204,18 +239,16 @@ public class RegionTranslationService : IDisposable
                 //    default, so the chip on the overlay names the source actually used.
                 var (targetLangCode, _) = GetTargetLanguage();
                 _lastSourceLanguage = sourceLanguageTag;
-                _lastOcrLineCount = ocrResult.Lines.Count;
+                _lastOcrLineCount = logicalLines.Count;
 
-                var currentProvider = string.IsNullOrEmpty(_settingsService.Current.DefaultTranslationProvider)
-                    ? "google"
-                    : _settingsService.Current.DefaultTranslationProvider;
+                var currentProvider = _translationService.ResolveRegionProvider();
 
                 var translatedText = await TranslateRegionTextAsync(currentProvider, originalText, sourceLanguageTag, targetLangCode, ct);
 
                 ct.ThrowIfCancellationRequested();
 
                 // 5. Show the translation
-                if (_overlayWindow != null)
+                if (ReferenceEquals(overlay, _overlayWindow))
                 {
                     var isRtl = TranslationService.IsRtlLanguage(targetLangCode);
 
@@ -226,7 +259,7 @@ public class RegionTranslationService : IDisposable
                     {
                         try
                         {
-                            _overlayWindow.ApplySceneTheme(ColorExtractionService.ExtractFromBitmap(bitmap));
+                            overlay.ApplySceneTheme(ColorExtractionService.ExtractFromBitmap(bitmap));
                         }
                         catch (Exception ex)
                         {
@@ -234,9 +267,9 @@ public class RegionTranslationService : IDisposable
                         }
                     }
 
-                    _overlayWindow.SetProviders(TranslationService.TranslationProviders, currentProvider);
-                    _overlayWindow.SetTranslation(originalText, translatedText, isRtl,
-                        ocrResult.Lines.Count, EstimateSourceFontSize(ocrResult),
+                    overlay.SetProviders(TranslationService.TranslationProviders, currentProvider);
+                    overlay.SetTranslation(originalText, translatedText, isRtl,
+                        logicalLines.Count, EstimateSourceFontSize(ocrResult),
                         TranslationService.IsRtlLanguage(sourceLanguageTag));
                 }
 
@@ -260,12 +293,17 @@ public class RegionTranslationService : IDisposable
         }
         catch (OperationCanceledException)
         {
-            // Superseded or dismissed - clean up silently
+            // Superseded or dismissed. Whoever cancelled normally took the overlay down already,
+            // but if this one is somehow still the current overlay it must not be left sitting
+            // on screen in its loading state with the dim behind it.
+            if (overlay != null && ReferenceEquals(overlay, _overlayWindow))
+                overlay.Dismiss();
         }
         catch (Exception ex)
         {
             Log.Warning(ex, "Region translation pipeline failed");
-            CloseOverlayWindow();
+            if (overlay == null || ReferenceEquals(overlay, _overlayWindow))
+                CloseOverlayWindow();
         }
     }
 
@@ -307,9 +345,10 @@ public class RegionTranslationService : IDisposable
         return string.IsNullOrWhiteSpace(translated) ? text : translated;
     }
 
-    private void ShowNoTextFound()
+    private void ShowNoTextFound(RegionOverlayWindow overlay)
     {
-        _overlayWindow?.SetTranslation("", "No text found in region");
+        if (ReferenceEquals(overlay, _overlayWindow))
+            overlay.SetTranslation("", "No text found in region");
     }
 
     /// <summary>

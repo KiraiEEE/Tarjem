@@ -210,7 +210,7 @@ public static class WordMatcher
         var index = grouped.FindIndex(line => line.Contains(target));
 
         var texts = grouped
-            .Select(line => string.Join(" ", line.OrderBy(w => w.Bounds.X).Select(w => w.Text)))
+            .Select(line => OcrLineText.Compose(line.OrderBy(w => w.Bounds.X).Select(w => w.Text)))
             .ToList();
 
         return (index < 0 ? 0 : index, texts);

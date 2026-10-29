@@ -101,7 +101,7 @@ public partial class App : Application
         {
             Log.Fatal(ex, "Failed to initialize OCR engine");
             MessageBox.Show(
-                $"Failed to initialize OCR engine.\n\nError: {ex.Message}\n\nPlease ensure English language pack is installed.",
+                $"Failed to initialize OCR engine.\n\nError: {ex.Message}\n\nWindows has no text-recognition (OCR) language installed. Add one in Windows Settings > Time & language > Language & region.",
                 "Tarjem - OCR Error",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
@@ -361,8 +361,10 @@ public partial class App : Application
 
         // Tear down a region translation still on screen for the same reason the region hotkey
         // tears down a word popup: the two can't coexist, and a leftover region overlay keeps the
-        // screen dimmed.
-        _regionTranslationService?.Cancel();
+        // screen dimmed. At once rather than faded, and gone from the screen before the capture
+        // below - otherwise OCR reads our own overlay instead of the word under the cursor.
+        if (_regionTranslationService?.Cancel(immediate: true) == true)
+            ScreenCaptureGuard.WaitForCompositor();
 
         try
         {
@@ -442,7 +444,11 @@ public partial class App : Application
         // there - greying the whole screen - after the region overlay was dismissed.
         Interlocked.Increment(ref _generation);
         _cts?.Cancel();
-        _overlayService?.DismissAll();
+
+        // Immediately, not faded: the region flow's first act is to freeze a screenshot, and a
+        // fading dim or popup caught in it stays frozen over the whole screen.
+        if (_overlayService?.DismissAll(immediate: true) == true)
+            ScreenCaptureGuard.WaitForCompositor();
 
         _regionTranslationService.StartRegionTranslation();
     }

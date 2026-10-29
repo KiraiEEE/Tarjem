@@ -12,6 +12,19 @@ namespace Tarjem.Core.Translation;
 /// </summary>
 public static class TranslationPrompts
 {
+    /// <summary>
+    /// Sampling temperature for calls that write text for a reader - block and sentence
+    /// translation. Every call used to run at 0.2-0.3, which is right for facts and wrong here: a
+    /// low temperature makes the model take the single most probable continuation at each step,
+    /// and for a translation the most probable continuation is the word-for-word mapping of the
+    /// source. The instructions above ask for a rewrite; this is what lets the model produce one.
+    /// </summary>
+    public const double RewriteTemperature = 0.6;
+
+    /// <summary>Temperature for calls answering a question of fact (encyclopedia, dictionary
+    /// fields) where the most probable answer is exactly the one wanted.</summary>
+    public const double FactualTemperature = 0.2;
+
     /// <summary>The standing role every AI translation call opens with.</summary>
     public static string SystemInstruction(string targetLanguageName) =>
         $@"You are a native {targetLanguageName} writer producing text for {targetLanguageName} readers.
@@ -46,7 +59,7 @@ Write it as though it had been authored in {targetLanguageName} in the first pla
 - Match the register exactly: casual stays casual, formal stays formal, and dialogue keeps its character's voice and energy.
 - Keep it about as long as the original. It is drawn back over the space the text came from, so an explanatory expansion will not fit.
 
-Keep the original line breaks - the result is drawn back over the layout it came from. The text was read by OCR and may contain recognition errors: infer what was meant and translate that, rather than reproducing an obvious typo. If a fragment is cut off mid-sentence, translate the fragment as a fragment; do not invent an ending for it.
+Each line below is one complete unit - a sentence or paragraph, a menu entry, a list item, a line of dialogue. Lines that merely wrapped on screen have already been joined, so never split a line and never merge two. Return the same number of lines in the same order, because the result is drawn back over the layout it came from - but within each line, restructure freely. The text was read by OCR and may contain recognition errors: infer what was meant and translate that, rather than reproducing an obvious typo. If a fragment is cut off mid-sentence, translate the fragment as a fragment; do not invent an ending for it.
 
 Return only the {targetLanguageName} text. No quotes, no commentary, no alternatives, no notes, nothing before or after it.
 

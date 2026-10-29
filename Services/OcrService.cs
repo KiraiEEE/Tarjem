@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using Serilog;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
+using Tarjem.Core.Language;
 using Tarjem.Core.Ocr;
 
 namespace Tarjem.Services;
@@ -23,14 +24,24 @@ public class OcrService
     /// coordinate the engine reports is in that larger space and has to be divided back out.</summary>
     private const int OcrUpscale = 2;
 
+    /// <summary>The engine used when the requested language has no pack installed. English when
+    /// there is one, otherwise whatever Windows can read.</summary>
+    private readonly OcrEngine _fallbackEngine;
+
     public OcrService()
     {
-        // English must always work - it's the fallback whenever a configured source language's
-        // Windows OCR pack turns out not to be installed, so fail fast at startup rather than
-        // discovering it silently mid-lookup.
-        var english = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("en-US"))
-            ?? throw new InvalidOperationException("English OCR language not installed.");
-        _engines["en"] = english;
+        // English is the preferred fallback whenever a configured source language's Windows OCR
+        // pack turns out not to be installed. It used to be *required*, which kept the app from
+        // starting at all on a Windows install whose only OCR language is, say, Polish or Arabic.
+        // Any installed recognizer will do; only having none at all is fatal.
+        var english = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("en-US"));
+        if (english != null)
+            _engines["en"] = english;
+
+        _fallbackEngine = english
+            ?? OcrEngine.TryCreateFromUserProfileLanguages()
+            ?? OcrEngine.AvailableRecognizerLanguages.Select(OcrEngine.TryCreateFromLanguage).FirstOrDefault(e => e != null)
+            ?? throw new InvalidOperationException("No Windows OCR language is installed.");
     }
 
     /// <summary>Windows OCR language packs are opt-in (Settings > Time & Language > Language,
@@ -136,8 +147,7 @@ public class OcrService
     /// setting (e.g. after uninstalling a language pack) degrades instead of throwing.</summary>
     public async Task<RecognizedText?> RecognizeTextAsync(Bitmap bitmap, string languageTag)
     {
-        var engine = GetOrCreateEngine(languageTag) ?? GetOrCreateEngine("en");
-        if (engine == null) return null;
+        var engine = GetOrCreateEngine(languageTag) ?? _fallbackEngine;
 
         using var softwareBitmap = await PrepareSoftwareBitmapAsync(bitmap);
         return Convert(await engine.RecognizeAsync(softwareBitmap));
@@ -169,35 +179,75 @@ public class OcrService
                     wordIndex));
             }
 
-            lines.Add(new RecognizedLine(line.Text, words));
+            // Not the engine's own line.Text: that joins words left to right with spaces, which
+            // reverses Arabic sentences and spaces out Chinese and Japanese. See OcrLineText.
+            lines.Add(new RecognizedLine(OcrLineText.Compose(words.Select(w => w.Text)), words));
         }
 
         return new RecognizedText(lines);
     }
 
-    /// <summary>Auto-detect: races every candidate language's OCR engine against the same
-    /// capture in parallel and keeps whichever produced the most recognized text - a
-    /// wrong-language engine forcing glyphs from the wrong script onto the same pixels
-    /// typically recognizes far less coherent text than the correct one. Slower than the
-    /// single-language path since it's N engines instead of one, even run in parallel.</summary>
+    /// <summary>
+    /// Auto-detect. Runs one engine per <em>script</em> among the candidates, in parallel, and keeps
+    /// the reading that is most convincingly in its engine's own script (see
+    /// <see cref="LanguageGuesser.ReadingScore"/>). When several candidates share the winning script
+    /// - English, French and Polish are all Latin - the language is then told apart from the text
+    /// itself, and only if that points at a different language than the one already run does a
+    /// second pass run with its engine, so its own letters (Polish ł, French œ) come out right.
+    ///
+    /// This used to run every candidate's engine and keep the longest output: one OCR pass per
+    /// installed language on every press, and within a script a coin toss over which language the
+    /// text was labelled - a label that is sent to the translator as the source language.
+    /// </summary>
+    /// <param name="preferredLanguageTag">The user's configured source language. It represents its
+    /// script in the first pass and wins every undecided call within it.</param>
     public async Task<(RecognizedText Result, string LanguageTag)?> DetectAndRecognizeAsync(
-        Bitmap bitmap, IReadOnlyList<string> candidateLanguageTags, CancellationToken ct)
+        Bitmap bitmap, IReadOnlyList<string> candidateLanguageTags, string? preferredLanguageTag, CancellationToken ct)
     {
+        var available = candidateLanguageTags.Where(tag => GetOrCreateEngine(tag) != null).ToList();
+        if (available.Count == 0) return null;
+
         using var softwareBitmap = await PrepareSoftwareBitmapAsync(bitmap);
 
-        var attempts = candidateLanguageTags
-            .Select(tag => (Tag: tag, Engine: GetOrCreateEngine(tag)))
-            .Where(a => a.Engine != null)
+        var groups = available
+            .GroupBy(LanguageGuesser.ScriptOf)
+            .Select(g => g.ToList())
+            .Select(members => (Members: members, Representative: Representative(members, preferredLanguageTag)))
             .ToList();
 
-        if (attempts.Count == 0) return null;
-
-        var tasks = attempts.Select(async a => (a.Tag, Result: await a.Engine!.RecognizeAsync(softwareBitmap))).ToArray();
-        var results = await Task.WhenAll(tasks);
+        var firstPass = await Task.WhenAll(groups.Select(async g =>
+            (g.Members, g.Representative, Result: await GetOrCreateEngine(g.Representative)!.RecognizeAsync(softwareBitmap))));
         ct.ThrowIfCancellationRequested();
 
-        var best = results.OrderByDescending(r => r.Result.Text.Length).First();
-        return (Convert(best.Result), best.Tag);
+        var best = firstPass
+            .OrderByDescending(r => LanguageGuesser.ReadingScore(r.Result.Text, r.Representative))
+            .ThenBy(r => r.Representative == preferredLanguageTag ? 0 : 1)
+            .First();
+
+        var languageTag = best.Representative;
+        var result = best.Result;
+
+        if (best.Members.Count > 1)
+        {
+            var guess = LanguageGuesser.GuessWithinScript(result.Text, best.Members, best.Representative);
+            if (guess != best.Representative && GetOrCreateEngine(guess) is { } engine)
+            {
+                result = await engine.RecognizeAsync(softwareBitmap);
+                languageTag = guess;
+                ct.ThrowIfCancellationRequested();
+            }
+        }
+
+        return (Convert(result), languageTag);
+    }
+
+    /// <summary>The language whose engine reads a script in the first pass: the user's own source
+    /// language if it is in this script, else English, else the first in the list.</summary>
+    private static string Representative(IReadOnlyList<string> members, string? preferred)
+    {
+        if (preferred != null && members.Contains(preferred, StringComparer.OrdinalIgnoreCase))
+            return members.First(m => string.Equals(m, preferred, StringComparison.OrdinalIgnoreCase));
+        return members.FirstOrDefault(m => m == "en") ?? members[0];
     }
 
     private static async Task<SoftwareBitmap> PrepareSoftwareBitmapAsync(Bitmap bitmap)

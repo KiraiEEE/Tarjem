@@ -41,6 +41,28 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             .Select(name => new CreditedName(name))
             .ToArray();
 
+    /// <summary>"Release build, 29 Oct 14:02" - which build this is and when it was compiled, so a
+    /// test run can be told apart from an older Debug or installed copy at a glance. Read from the
+    /// file's timestamp rather than stamped in at build time, which would make every build a full
+    /// rebuild.</summary>
+    private static string BuildDescription()
+    {
+#if DEBUG
+        const string configuration = "Debug build";
+#else
+        const string configuration = "Release build";
+#endif
+        try
+        {
+            var built = System.IO.File.GetLastWriteTime(typeof(MainWindow).Assembly.Location);
+            return $"{configuration}, {built:d MMM HH:mm}";
+        }
+        catch
+        {
+            return configuration;
+        }
+    }
+
     private static readonly TimeSpan PageFadeDuration = TimeSpan.FromMilliseconds(140);
     private static readonly IEasingFunction PageFadeEase = new QuadraticEase { EasingMode = EasingMode.EaseOut };
 
@@ -80,7 +102,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         LibraryList.ItemsSource = Libraries;
         ApiList.ItemsSource = ExternalApis;
-        AboutVersionText.Text = $"Version {UpdateService.CurrentVersion}";
+        AboutVersionText.Text = $"Version {UpdateService.CurrentVersion} · {BuildDescription()}";
 
         // Once, here rather than in LoadApiKeyBoxes, which "Clear all data" calls again.
         foreach (var box in new[] { ApiKeyBox, GroqApiKeyBox, CerebrasApiKeyBox, MerriamWebsterApiKeyBox })
@@ -131,6 +153,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _binder.Bind(PopupStyleComboBox, s => s.PopupVisualStyle, (s, v) => s.PopupVisualStyle = v);
         _binder.Bind(RegionFontSizeModeCombo, s => s.RegionFontSizeMode, (s, v) => s.RegionFontSizeMode = v);
+
+        _binder.Fill(RegionTranslationProviderCombo, TranslationService.RegionTranslationSources, _settings.Current.RegionTranslationProvider);
+        _binder.Bind(RegionTranslationProviderCombo, s => s.RegionTranslationProvider, (s, v) => s.RegionTranslationProvider = v);
 
         _binder.Bind(ExplainAnswerLengthCombo, s => s.ExplainAnswerLength, (s, v) => s.ExplainAnswerLength = v);
         _binder.Bind(ExplainShowOriginalToggle, s => s.ExplainShowOriginal, (s, v) => s.ExplainShowOriginal = v);
@@ -191,6 +216,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         SettingsBinder.Select(ThemeCombo, s.Theme);
         SettingsBinder.Select(PopupStyleComboBox, s.PopupVisualStyle);
         SettingsBinder.Select(RegionFontSizeModeCombo, s.RegionFontSizeMode);
+        SettingsBinder.Select(RegionTranslationProviderCombo, s.RegionTranslationProvider);
         SettingsBinder.Select(ExplainAnswerLengthCombo, s.ExplainAnswerLength);
     }
 

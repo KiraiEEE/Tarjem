@@ -57,7 +57,7 @@ public sealed class RecognizedText
             .Select(g =>
             {
                 var ordered = g.OrderBy(w => w.WordIndex).ToList();
-                return new RecognizedLine(string.Join(" ", ordered.Select(w => w.Text)), ordered);
+                return new RecognizedLine(OcrLineText.Compose(ordered.Select(w => w.Text)), ordered);
             })
             .ToList();
 

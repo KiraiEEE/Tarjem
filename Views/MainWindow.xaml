@@ -1431,6 +1431,24 @@
 
                                     <ui:CardControl Margin="0,0,0,8">
                                         <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Translate24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Translation source" FontWeight="Medium"/>
+                                                <TextBlock Text="Best available uses an AI source whenever one has a key - they rewrite the text the way a native speaker would, where Google translates it word for word. Falls back to your default translation source otherwise."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ComboBox x:Name="RegionTranslationProviderCombo"
+                                                  Width="220"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
                                             <ui:SymbolIcon Symbol="TextFontSize24"/>
                                         </ui:CardControl.Icon>
                                         <ui:CardControl.Header>

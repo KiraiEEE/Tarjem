@@ -138,7 +138,7 @@ public sealed class LookupPipeline
             .Where(_ocr.IsLanguageAvailable)
             .ToList();
 
-        var detected = await _ocr.DetectAndRecognizeAsync(bitmap, candidates, ct);
+        var detected = await _ocr.DetectAndRecognizeAsync(bitmap, candidates, settings.SourceLanguage, ct);
         ct.ThrowIfCancellationRequested();
 
         return detected == null ? null : (detected.Value.Result, detected.Value.LanguageTag);

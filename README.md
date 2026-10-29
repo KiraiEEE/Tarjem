@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%2B-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/.NET-8.0-purple" alt=".NET 8" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-  <img src="https://img.shields.io/badge/version-0.4.0-orange" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.5.0-orange" alt="Version" />
 </p>
 
 <p align="center">
@@ -83,6 +83,11 @@ dotnet build Tarjem.csproj
 dotnet test Tarjem.Core.Tests/Tarjem.Core.Tests.csproj
 dotnet test Tarjem.UiTests/Tarjem.UiTests.csproj
 ```
+
+**Testing the latest code:** run `tools\make-desktop-shortcut.ps1` once. The *Tarjem (Latest)*
+shortcut it puts on the desktop closes any running copy, rebuilds the current source in Release
+and starts it - so it never runs a stale Debug or installed build. Settings > About shows which
+build is running and when it was compiled.
 
 Packaging with bundled API keys: put them in a `.env` beside the built exe, run
 `Tarjem.exe --pack-keys`, delete the `.env`, then build the installer.

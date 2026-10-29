@@ -56,7 +56,7 @@ public sealed class OpenAiCompatibleService
             var content = await CompleteAsync(
                 TranslationPrompts.SystemInstruction(targetLanguageName),
                 TranslationPrompts.TextTranslationRequest(text, sourceLanguageName, targetLanguageName),
-                maxTokens: 2048, ct);
+                maxTokens: 2048, TranslationPrompts.RewriteTemperature, ct);
 
             return string.IsNullOrWhiteSpace(content) ? null : content.Trim();
         }
@@ -79,7 +79,7 @@ public sealed class OpenAiCompatibleService
             var content = await CompleteAsync(
                 TranslationPrompts.SystemInstruction(targetLanguageName),
                 TranslationPrompts.WordTranslationRequest(word, sentence, sourceLanguageName, targetLanguageName),
-                maxTokens: 512, ct);
+                maxTokens: 512, TranslationPrompts.RewriteTemperature, ct);
 
             if (string.IsNullOrWhiteSpace(content)) return null;
 
@@ -115,7 +115,7 @@ public sealed class OpenAiCompatibleService
             var content = await CompleteAsync(
                 TranslationPrompts.EncyclopediaSystemInstruction(sourceLanguageName),
                 TranslationPrompts.EncyclopediaRequest(term, sourceLanguageName),
-                maxTokens: 512, ct);
+                maxTokens: 512, TranslationPrompts.FactualTemperature, ct);
 
             return EncyclopediaAnswerParser.Parse(content);
         }
@@ -133,7 +133,7 @@ public sealed class OpenAiCompatibleService
     {
         try
         {
-            var reply = await CompleteAsync("You are a test endpoint.", "Reply with the single word: ok", maxTokens: 8, ct);
+            var reply = await CompleteAsync("You are a test endpoint.", "Reply with the single word: ok", maxTokens: 8, temperature: 0, ct);
             return !string.IsNullOrWhiteSpace(reply);
         }
         catch (OperationCanceledException) { throw; }
@@ -144,12 +144,12 @@ public sealed class OpenAiCompatibleService
         }
     }
 
-    private async Task<string?> CompleteAsync(string system, string user, int maxTokens, CancellationToken ct)
+    private async Task<string?> CompleteAsync(string system, string user, int maxTokens, double temperature, CancellationToken ct)
     {
         var body = new JsonObject
         {
             ["model"] = _model,
-            ["temperature"] = 0.3,
+            ["temperature"] = temperature,
             ["max_tokens"] = maxTokens,
             ["messages"] = new JsonArray(
                 new JsonObject { ["role"] = "system", ["content"] = system },

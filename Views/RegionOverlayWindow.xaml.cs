@@ -628,9 +628,14 @@ public partial class RegionOverlayWindow : Window
 
         var clean = text.Replace("\r\n", "\n").Replace("\r", "\n");
 
+        // A translation that already has its own line structure keeps it, whole. This used to
+        // truncate to the OCR's line count, silently dropping the end of any translation that
+        // came back with an extra line; and splitting a multi-line answer again at its commas
+        // chopped sentences the translator had deliberately kept together. Only a translation
+        // that came back as one run-on line is redistributed below.
         var existingLines = clean.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        if (existingLines.Length >= lineCount)
-            return string.Join("\n", existingLines.Take(lineCount));
+        if (existingLines.Length > 1)
+            return string.Join("\n", existingLines);
 
         var sentences = SplitAtBoundaries(clean);
         if (sentences.Count >= lineCount)

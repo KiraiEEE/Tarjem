@@ -48,6 +48,7 @@ public partial class RegionSelectionWindow : Window
         PreviewMouseLeftButtonUp += OnMouseLeftUp;
         PreviewKeyDown += OnKeyDown;
         PreviewMouseRightButtonDown += (_, _) => Cancel();
+        LostMouseCapture += OnLostMouseCapture;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -56,6 +57,10 @@ public partial class RegionSelectionWindow : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         var exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
         SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
+
+        // This window *is* a dimmed screenshot. If a capture could see it, pressing Alt+W while it
+        // was up froze a picture of the dimmed screen and dimmed it again.
+        Tarjem.Services.ScreenCaptureGuard.ExcludeFromCapture(hwnd);
     }
 
     /// <summary>
@@ -63,7 +68,11 @@ public partial class RegionSelectionWindow : Window
     /// The user draws their selection on the frozen image, not on the live desktop.
     /// This prevents the game/app from losing focus.
     /// </summary>
-    public void ShowWithScreenshot()
+    /// <param name="dimBehind">The user's "Dim the screen behind overlays" setting. The selection
+    /// screen used to hard-code a 35% wash regardless of it, which turned the whole screen grey -
+    /// Alt+Q and Alt+E were showing a light transparent layer while Alt+W looked like it had
+    /// covered the monitor in fog.</param>
+    public void ShowWithScreenshot(bool dimBehind = true)
     {
         var cursor = System.Windows.Forms.Cursor.Position;
         var screen = System.Windows.Forms.Screen.FromPoint(cursor);
@@ -85,14 +94,27 @@ public partial class RegionSelectionWindow : Window
         // Capture the full screen. The bitmap is kept (not disposed here) so the selected
         // region can be cropped straight out of it - re-capturing the screen afterwards would
         // race the result overlay's own fade-in and OCR our overlay instead of the app's text.
+        var frozen = false;
         try
         {
             _screenshot?.Dispose();
+            _screenshot = null;
             var bmp = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(bmp))
             {
                 g.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, new System.Drawing.Size(bounds.Width, bounds.Height), CopyPixelOperation.SourceCopy);
             }
+
+            // Protected video and exclusive-fullscreen games come back from a screen copy as solid
+            // black. Freezing that over the screen blacked out everything the user was looking at,
+            // so show the live screen instead and let the region be captured after the selection.
+            if (IsBlankCapture(bmp))
+            {
+                Serilog.Log.Information("Screen capture came back blank (protected or exclusive-fullscreen content); selecting over the live screen");
+                bmp.Dispose();
+                throw new InvalidOperationException("blank capture");
+            }
+
             _screenshot = bmp;
 
             using var ms = new MemoryStream();
@@ -107,15 +129,19 @@ public partial class RegionSelectionWindow : Window
             bi.Freeze();
 
             ScreenshotBg.Source = bi;
+            frozen = true;
         }
         catch
         {
             // If screenshot fails, just show a dim overlay
+            _screenshot?.Dispose();
+            _screenshot = null;
         }
 
-        // Fade in the screenshot and dim
-        ScreenshotBg.Opacity = 1.0;
-        DimOverlay.Opacity = 0.35;
+        // Over a frozen screenshot the dim is what says "you're selecting now". Over the live
+        // screen it is kept light, so whatever is underneath stays readable enough to aim at.
+        ScreenshotBg.Opacity = frozen ? 1.0 : 0;
+        DimOverlay.Opacity = dimBehind ? 0.10 : 0;
 
         Show();
         // Do NOT call Activate/Focus - keeps the game in the background
@@ -226,6 +252,47 @@ public partial class RegionSelectionWindow : Window
             height);
 
         RegionSelected?.Invoke(this, screenRect);
+    }
+
+    /// <summary>
+    /// True when a capture is (all but) pure black. Sampled on a grid rather than read in full -
+    /// a real screen, even a dark one, has text, UI or noise somewhere on a 48x27 grid, while a
+    /// blocked capture is exactly zero everywhere. Getting it wrong on a genuinely black screen
+    /// costs nothing: the selection just happens over the live screen instead of a still of it.
+    /// </summary>
+    public static bool IsBlankCapture(Bitmap bitmap)
+    {
+        const int Columns = 48, Rows = 27;
+        if (bitmap.Width < Columns || bitmap.Height < Rows) return false;
+
+        var lit = 0;
+        for (var r = 0; r < Rows; r++)
+        {
+            for (var c = 0; c < Columns; c++)
+            {
+                var px = bitmap.GetPixel(
+                    (int)((c + 0.5) * bitmap.Width / Columns),
+                    (int)((r + 0.5) * bitmap.Height / Rows));
+
+                if (px.R > 2 || px.G > 2 || px.B > 2)
+                    lit++;
+            }
+        }
+
+        // Tolerate a mouse cursor or a stray overlay pixel or two.
+        return lit <= 2;
+    }
+
+    /// <summary>Capture can be taken away mid-drag (a UAC prompt, alt-tab, another app grabbing
+    /// the mouse). Without this the half-drawn rectangle stayed on the frozen screen waiting for
+    /// a mouse-up that was never coming, and the only way out was knowing to press Escape.</summary>
+    private void OnLostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (!_isDragging) return;
+
+        _isDragging = false;
+        SelectionRect.Visibility = Visibility.Collapsed;
+        HintText.Visibility = Visibility.Visible;
     }
 
     private void OnKeyDown(object sender, KeyEventArgs e)

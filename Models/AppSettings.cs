@@ -25,6 +25,16 @@ public class AppSettings
     public string DefaultDictionaryProvider { get; set; } = "freedictionaryapi.com";
     public string DefaultTranslationProvider { get; set; } = "google";
 
+    /// <summary>
+    /// Which source Alt+W translates a region with. Separate from
+    /// <see cref="DefaultTranslationProvider"/> because the reason that one defaults to Google -
+    /// not spending a model request on every hover - doesn't apply here: a region is a deliberate
+    /// drag, a few times a session, and it is the text where Google's word-for-word output shows
+    /// worst. <see cref="Tarjem.Services.TranslationService.AutoRegionProvider"/> means "the best
+    /// AI source that has a key, otherwise the default above".
+    /// </summary>
+    public string RegionTranslationProvider { get; set; } = Tarjem.Services.TranslationService.AutoRegionProvider;
+
     /// <summary>Which source Alt+E asks first. Wikipedia by default rather than one of the AI
     /// sources, because a wiki that answers can be linked to and an AI that answers cannot - the
     /// models are there for the long tail neither wiki carries, and the failover reaches them on
