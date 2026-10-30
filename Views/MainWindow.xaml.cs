@@ -548,9 +548,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         DetailSentenceText.Text = entry.Sentence;
         DetailTranslatedSentenceText.Text = entry.TranslatedSentence;
 
-        DetailTimestampText.Text = entry.LookupCount > 1
-            ? $"Looked up {entry.LookupCount} times · first on {entry.FirstLookedUp ?? entry.Timestamp:MMM d, yyyy}, last on {entry.Timestamp:MMM d, yyyy 'at' h:mm tt}"
-            : $"Looked up {entry.Timestamp:MMM d, yyyy 'at' h:mm tt}";
+        var first = entry.FirstLookedUp ?? entry.Timestamp;
+        DetailTimestampText.Text = entry.LookupCount <= 1
+            ? $"Looked up {entry.Timestamp:MMM d, yyyy 'at' h:mm tt}"
+            : first.Date == entry.Timestamp.Date
+                ? $"Looked up {entry.LookupCount} times · last on {entry.Timestamp:MMM d, yyyy 'at' h:mm tt}"
+                : $"Looked up {entry.LookupCount} times · first on {first:MMM d, yyyy}, last on {entry.Timestamp:MMM d, yyyy 'at' h:mm tt}";
     }
 
     private static void ApplyTranslationDirection(TextBlock block, HistoryEntry entry, double size)
