@@ -82,17 +82,15 @@ language, generated from the catalog so it can't drift out of step with the chai
 
 ## Pronunciation audio
 
-The clearest remaining gap for a vocabulary tool: the popup renders `/ˈlaɪbrəri/` and there is no
-way to hear it. `Windows.Media.SpeechSynthesis` is already available with no package to add, works
-offline, and covers most of the 18 languages — a speaker button beside the phonetic and beside the
-translated word. Deliberately deferred once; it should be the next feature.
+Shipped in 0.6 for the headword (`Services/PronunciationService.cs`). Still open: a second
+speaker beside the *translated* word, for people learning the target language rather than the
+source. The service already takes any language code, so it is a button and a click handler.
 
 ## Ideas not yet started
 
-- A "words you keep looking up" view — repeated lookups are the ones worth learning. Needs a
-  lookup counter on `HistoryEntry` instead of the current append-only list.
-- Filter history by CEFR level.
 - Arabic diacritics (tashkeel) toggle for learners.
+- Spaced-repetition review inside the app: `LookupCount` and `FirstLookedUp` (added in 0.6) are
+  the start of the data it needs, so Anki is no longer the only way to study the list.
 - OCR correction for languages other than English — the current corrector and its frequency list
   are English-only, so non-English sources get the raw OCR token.
 - Golden-image tests for the OCR half: `WordMatcher` is now covered against hand-written

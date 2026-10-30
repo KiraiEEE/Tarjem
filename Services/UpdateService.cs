@@ -58,7 +58,7 @@ public sealed class UpdateService
             Log.Information("Update available: {Latest} (running {Current})", latest, CurrentVersion);
             return new AvailableUpdate(latest, url);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Update check failed");

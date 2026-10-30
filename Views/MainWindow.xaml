@@ -204,6 +204,8 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
                         <ui:TextBox x:Name="SearchBox"
@@ -213,15 +215,44 @@
                                     TextChanged="SearchBox_TextChanged"
                                     Margin="0,0,10,0"/>
 
-                        <ui:Button Grid.Column="1"
+                        <!-- "Most looked up" is the words-you-keep-forgetting view: a lookup
+                             counter is what makes it possible. -->
+                        <ComboBox x:Name="HistorySortCombo"
+                                  Grid.Column="1"
+                                  Width="150"
+                                  Margin="0,0,8,0"
+                                  ToolTip="Sort"
+                                  SelectionChanged="HistoryFilter_Changed">
+                            <ComboBoxItem Content="Most recent" Tag="recent" IsSelected="True"/>
+                            <ComboBoxItem Content="Most looked up" Tag="count"/>
+                            <ComboBoxItem Content="A to Z" Tag="alpha"/>
+                            <ComboBoxItem Content="Hardest first" Tag="level"/>
+                        </ComboBox>
+
+                        <ComboBox x:Name="HistoryLevelCombo"
+                                  Grid.Column="2"
+                                  Width="110"
+                                  Margin="0,0,8,0"
+                                  ToolTip="Show only words at this level"
+                                  SelectionChanged="HistoryFilter_Changed">
+                            <ComboBoxItem Content="All levels" Tag="" IsSelected="True"/>
+                            <ComboBoxItem Content="A1" Tag="A1"/>
+                            <ComboBoxItem Content="A2" Tag="A2"/>
+                            <ComboBoxItem Content="B1" Tag="B1"/>
+                            <ComboBoxItem Content="B2" Tag="B2"/>
+                            <ComboBoxItem Content="C1" Tag="C1"/>
+                            <ComboBoxItem Content="C2" Tag="C2"/>
+                        </ComboBox>
+
+                        <ui:Button Grid.Column="3"
                                    Content="Export"
                                    Icon="{ui:SymbolIcon ArrowExportLtr24}"
                                    Appearance="Secondary"
-                                   ToolTip="Save as an Anki deck or a spreadsheet"
+                                   ToolTip="Save the words shown as an Anki deck or a spreadsheet"
                                    Margin="0,0,8,0"
                                    Click="ExportHistory_Click"/>
 
-                        <ui:Button Grid.Column="2"
+                        <ui:Button Grid.Column="4"
                                    Content="Clear"
                                    Icon="{ui:SymbolIcon Delete24}"
                                    Appearance="Secondary"
@@ -330,6 +361,14 @@
                                                             <TextBlock Text="{Binding CefrLevel}" FontSize="9" FontWeight="Bold" Foreground="White"/>
                                                         </Border>
 
+                                                        <TextBlock Text="{Binding LookupCountBadge}"
+                                                                   FontSize="11"
+                                                                   FontWeight="SemiBold"
+                                                                   Margin="6,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   ToolTip="Times looked up"
+                                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+
                                                         <Image Source="pack://application:,,,/Tarjem;component/Assets/sparkling-star.png"
                                                                Width="11" Height="11"
                                                                Margin="6,0,0,0"
@@ -350,8 +389,9 @@
 
                                                     <TextBlock Text="{Binding ArabicTranslation}"
                                                                FontSize="13"
-                                                               FlowDirection="RightToLeft"
-                                                               TextAlignment="Right"
+                                                               FlowDirection="{Binding TranslationFlowDirection}"
+                                                               FontFamily="{Binding TranslationFont}"
+                                                               TextAlignment="Left"
                                                                Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
                                                                TextTrimming="CharacterEllipsis"
                                                                Margin="0,4,0,0"/>
@@ -397,13 +437,15 @@
                                         HorizontalAlignment="Center"
                                         VerticalAlignment="Center"
                                         Visibility="Visible">
-                                <TextBlock Text="No translations yet"
+                                <TextBlock x:Name="EmptyStateTitle"
+                                           Text="No translations yet"
                                            FontSize="15"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                            HorizontalAlignment="Center"
                                            TextWrapping="Wrap"
                                            TextAlignment="Center"/>
-                                <TextBlock Text="Press Alt+Q anywhere to translate a word"
+                                <TextBlock x:Name="EmptyStateHint"
+                                           Text="Press Alt+Q anywhere to translate a word"
                                            FontSize="12"
                                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                            HorizontalAlignment="Center"
@@ -461,6 +503,15 @@
                                                            FontWeight="Bold"
                                                            Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                                            TextTrimming="CharacterEllipsis"/>
+                                                <ui:Button x:Name="DetailSpeakButton"
+                                                           Icon="{ui:SymbolIcon Speaker224}"
+                                                           Appearance="Transparent"
+                                                           ToolTip="Pronounce"
+                                                           Padding="6"
+                                                           Margin="8,0,0,0"
+                                                           VerticalAlignment="Center"
+                                                           Visibility="Collapsed"
+                                                           Click="DetailSpeak_Click"/>
                                                 <Image x:Name="DetailStar"
                                                        Source="pack://application:,,,/Tarjem;component/Assets/sparkling-star.png"
                                                        Width="16" Height="16"
@@ -520,15 +571,15 @@
 
                                         <Border Height="1" Background="{DynamicResource DividerStrokeColorDefaultBrush}" Margin="0,22,0,20"/>
 
-                                        <TextBlock Text="ARABIC TRANSLATION"
+                                        <TextBlock x:Name="DetailTranslationLabel"
+                                                   Text="TRANSLATION"
                                                    FontSize="10" FontWeight="Bold"
                                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                                    Margin="0,0,0,6"/>
                                         <TextBlock x:Name="DetailArabicText"
                                                    FontSize="20"
                                                    FontWeight="SemiBold"
-                                                   FlowDirection="RightToLeft"
-                                                   TextAlignment="Right"
+                                                   TextAlignment="Left"
                                                    TextWrapping="Wrap"
                                                    Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"/>
 
@@ -544,8 +595,7 @@
                                                        Margin="0,0,0,6"/>
                                             <TextBlock x:Name="DetailTranslatedSentenceText"
                                                        FontSize="14"
-                                                       FlowDirection="RightToLeft"
-                                                       TextAlignment="Right"
+                                                       TextAlignment="Left"
                                                        TextWrapping="Wrap"
                                                        Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
                                         </StackPanel>

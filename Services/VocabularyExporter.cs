@@ -67,9 +67,16 @@ public static class VocabularyExporter
         return sb.ToString();
 
         // Tabs and newlines are the field and record separators, so they cannot survive inside a
-        // value; <br> keeps the line break visible on the card since #html:true is set.
+        // value; <br> keeps the line break visible on the card since #html:true is set. That same
+        // directive makes Anki read every field as HTML, so a definition like "less than (<)" or
+        // "R&D" has to be escaped or it renders as a broken tag.
         static string Field(string? value) =>
-            (value ?? "").Replace("\t", " ").Replace("\r\n", "<br>").Replace('\n', ' ').Trim();
+            (value ?? "")
+                .Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+                .Replace("\t", " ")
+                .Replace("\r\n", "\n").Replace('\r', '\n')
+                .Trim()
+                .Replace("\n", "<br>");
     }
 
     /// <summary>Part of speech and phonetic belong with the definition rather than in fields of
@@ -96,7 +103,7 @@ public static class VocabularyExporter
     private static string BuildCsv(List<HistoryEntry> entries)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Word,Translation,Definition,PartOfSpeech,Phonetic,Level,Sentence,TranslatedSentence,Synonyms,LookedUp");
+        sb.AppendLine("Word,Translation,Definition,PartOfSpeech,Phonetic,Level,Sentence,TranslatedSentence,Synonyms,LookedUp,TimesLookedUp");
 
         foreach (var entry in entries)
         {
@@ -110,7 +117,8 @@ public static class VocabularyExporter
                 Quote(entry.Sentence),
                 Quote(entry.TranslatedSentence),
                 Quote(string.Join("; ", entry.Synonyms)),
-                Quote(entry.Timestamp.ToString("yyyy-MM-dd HH:mm"))));
+                Quote(entry.Timestamp.ToString("yyyy-MM-dd HH:mm")),
+                Quote(entry.LookupCount.ToString())));
         }
 
         return sb.ToString();

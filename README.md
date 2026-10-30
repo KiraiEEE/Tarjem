@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%2B-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/.NET-8.0-purple" alt=".NET 8" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-  <img src="https://img.shields.io/badge/version-0.5.0-orange" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.6.0-orange" alt="Version" />
 </p>
 
 <p align="center">
@@ -66,8 +66,17 @@ selections.
 ## Vocabulary
 
 Every Alt+Q lookup is saved with its definition, translation, CEFR level and the sentence it came
-from. **Export** on the History page writes that out as an Anki deck (tab-separated, with the
-import directives already set) or a CSV.
+from. Looking a word up again doesn't add a duplicate: it moves the word to the top and counts it,
+so **Most looked up** on the History page shows the words you keep forgetting. You can also sort
+A to Z or hardest first, and filter by level.
+
+**Export** writes the words on screen as an Anki deck (tab-separated, with the import directives
+already set) or a CSV, so a search or a level filter doubles as "export just these".
+
+**Pronunciation:** the speaker button beside the headword, in the popup and in History, says the
+word with the speech voices built into Windows. It works offline. The button appears only when a
+voice for that language is installed; you can add more in Windows Settings → Time & language →
+Speech.
 
 ## Languages
 

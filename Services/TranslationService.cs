@@ -324,7 +324,7 @@ public class TranslationService
                 providerId, term, sourceCode,
                 EncyclopediaService.SummaryLengthFor(settings.ExplainAnswerLength), ct);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Encyclopedia source {Provider} threw for {Term}", providerId, term);
@@ -510,7 +510,7 @@ public class TranslationService
                 var entry = await LookupOneEncyclopediaAsync(provider.Id, term, sourceCode, maxSummaryLength, ct);
                 if (entry != null) return (provider.Id, entry);
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 Log.Debug(ex, "Encyclopedia source {Provider} threw for {Term}", provider.Id, term);
@@ -599,7 +599,7 @@ public class TranslationService
                         outcome, provider.Id, word, sourceCode, sourceName, targetCode, targetName, fullSentence, ct);
                 }
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 Log.Debug(ex, "Dictionary source {Provider} threw for {Word}", provider.Id, word);
@@ -749,7 +749,7 @@ public class TranslationService
 
             return result with { Meanings = Refine(result.Meanings) };
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Dictionary provider {Provider} failed for {Word}", providerId, word);
@@ -1013,7 +1013,7 @@ public class TranslationService
                     return outcome;
                 }
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 Log.Debug(ex, "Translation source {Provider} threw", provider.Id);
@@ -1091,7 +1091,7 @@ public class TranslationService
                 ? TranslationLookupResult.Failed("Translation failed - the service may be unavailable.")
                 : new TranslationLookupResult(outcome.Word, outcome.Sentence, null);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Translation provider {Provider} failed for {Word}", providerId, word);
@@ -1192,7 +1192,7 @@ public class TranslationService
             // that as "nothing useful" so the caller's fallback gets a turn.
             return string.IsNullOrWhiteSpace(translated) || translated == text ? null : translated;
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Region translation provider {Provider} failed", providerId);
@@ -1227,7 +1227,7 @@ public class TranslationService
 
             return parts.Count == 0 ? null : string.Concat(parts);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Google translation failed");
@@ -1278,7 +1278,7 @@ public class TranslationService
                 if (json.RootElement.TryGetProperty("translation", out var t) && t.GetString() is { Length: > 0 } value)
                     return value;
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 Log.Debug(ex, "Lingva instance {Instance} failed", instance);
@@ -1317,7 +1317,7 @@ public class TranslationService
                 ? ProviderProbe.Ok((int)started.ElapsedMilliseconds)
                 : ProviderProbe.Failed("No response - the service may be down or rate limited.");
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Provider probe failed for {Provider}", providerId);

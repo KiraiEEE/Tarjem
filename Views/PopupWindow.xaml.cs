@@ -257,6 +257,7 @@ public partial class PopupWindow : Window
         CopyTranslationBtnIcon.Stroke = muted;
         CopyWordBtnIcon.Stroke = muted;
         CopyWordInlineBtnIcon.Stroke = muted;
+        SpeakWordBtnIcon.Stroke = muted;
 
         PosBadge.Background = new SolidColorBrush(_badgeBg);
         PartOfSpeechText.Foreground = new SolidColorBrush(_badgeText);
@@ -311,6 +312,7 @@ public partial class PopupWindow : Window
     {
         _currentResult = result;
         OriginalWordText.Text = result.OriginalWord;
+        SpeakWordBtn.Visibility = PronunciationService.CanSpeak(result.SourceLanguage) ? Visibility.Visible : Visibility.Collapsed;
 
         GeminiStar1.Visibility = result.IsTranslationFromGemini ? Visibility.Visible : Visibility.Collapsed;
         GeminiStar2.Visibility = result.IsDefinitionFromGemini ? Visibility.Visible : Visibility.Collapsed;
@@ -767,6 +769,16 @@ public partial class PopupWindow : Window
 
     private void CopyWordInline_Click(object sender, RoutedEventArgs e) =>
         Copy(OriginalWordText.Text, CopyWordInlineBtnIcon, CopyWordInlineTick);
+
+    private async void SpeakWord_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentResult == null) return;
+
+        // Lit in the accent while it speaks, so a click on a muted speaker visibly did something.
+        SpeakWordBtnIcon.Stroke = new SolidColorBrush(_accentColor);
+        await PronunciationService.SpeakAsync(_currentResult.OriginalWord, _currentResult.SourceLanguage);
+        SpeakWordBtnIcon.Stroke = new SolidColorBrush(_mutedColor);
+    }
 
     /// <summary>Raised with whatever the popup put on the clipboard, so the selection watcher can
     /// tell our own copy apart from the user copying something new to translate - the same contract

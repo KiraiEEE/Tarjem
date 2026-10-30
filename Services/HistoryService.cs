@@ -10,6 +10,8 @@ public class HistoryService
     // See the note in SettingsService: a property so a redirected AppPaths is honoured.
     private static string HistoryPath => AppPaths.HistoryFile;
 
+    private const int MaxEntries = 500;
+
     private readonly List<HistoryEntry> _entries = new();
     private readonly Dictionary<string, TranslationResult> _cache = new();
 
@@ -39,19 +41,14 @@ public class HistoryService
         Load();
     }
 
-    public bool IsCached(string word)
+    public TranslationResult? GetCached(string key)
     {
-        return _cache.ContainsKey(word.ToLower().Trim());
+        return _cache.TryGetValue(NormalizeKey(key), out var result) ? result : null;
     }
 
-    public TranslationResult? GetCached(string word)
+    public void CacheResult(string key, TranslationResult result)
     {
-        return _cache.TryGetValue(word.ToLower().Trim(), out var result) ? result : null;
-    }
-
-    public void CacheResult(string word, TranslationResult result)
-    {
-        var key = word.ToLower().Trim();
+        key = NormalizeKey(key);
         if (_cache.ContainsKey(key))
         {
             _cache[key] = result;
@@ -64,6 +61,10 @@ public class HistoryService
         while (_cacheOrder.Count > MaxCachedResults)
             _cache.Remove(_cacheOrder.Dequeue());
     }
+
+    // Invariant, not the current culture: under Turkish "I".ToLower() is a dotless "ı", which
+    // made "IMAGE" and "image" two different words to the cache and to the history.
+    private static string NormalizeKey(string key) => key.Trim().ToLowerInvariant();
 
     public void Add(TranslationResult result)
     {
@@ -79,22 +80,60 @@ public class HistoryService
             CefrLevel = result.CefrLevel,
             Synonyms = result.Synonyms,
             IsFromGemini = result.IsFromGemini,
+            SourceLanguage = result.SourceLanguage,
+            TargetLanguage = result.TargetLanguage,
             Timestamp = DateTime.Now
         };
 
+        // Looking the same word up again used to append a duplicate, so a word hovered ten times
+        // filled ten rows - and pushed ten other words out of the 500-entry cap. Fold it into the
+        // existing entry instead: newest answer and context, but the count and first-seen date
+        // carry over, and a field the new answer lacks keeps what the old one had.
+        var key = NormalizeKey(entry.Word);
+        var existing = _entries.FindIndex(e =>
+            NormalizeKey(e.Word) == key &&
+            (e.TargetLanguage.Length == 0 || e.TargetLanguage == entry.TargetLanguage));
+
+        if (existing >= 0)
+        {
+            var previous = _entries[existing];
+            _entries.RemoveAt(existing);
+            MergeInto(entry, previous);
+        }
+
         _entries.Insert(0, entry);
-        if (_entries.Count > 500) _entries.RemoveAt(_entries.Count - 1);
+        if (_entries.Count > MaxEntries) _entries.RemoveAt(_entries.Count - 1);
         Save();
+    }
+
+    private static void MergeInto(HistoryEntry entry, HistoryEntry previous)
+    {
+        entry.LookupCount = Math.Max(1, previous.LookupCount) + 1;
+        entry.FirstLookedUp = previous.FirstLookedUp ?? previous.Timestamp;
+
+        if (entry.Definition.Length == 0) entry.Definition = previous.Definition;
+        if (entry.ArabicTranslation.Length == 0) entry.ArabicTranslation = previous.ArabicTranslation;
+        if (entry.Phonetic.Length == 0) entry.Phonetic = previous.Phonetic;
+        if (entry.PartOfSpeech.Length == 0) entry.PartOfSpeech = previous.PartOfSpeech;
+        if (entry.CefrLevel.Length == 0) entry.CefrLevel = previous.CefrLevel;
+        if (entry.Synonyms.Length == 0) entry.Synonyms = previous.Synonyms;
+
+        if (entry.Sentence.Length == 0)
+        {
+            entry.Sentence = previous.Sentence;
+            entry.TranslatedSentence = previous.TranslatedSentence;
+        }
     }
 
     public List<HistoryEntry> Search(string query)
     {
         if (string.IsNullOrWhiteSpace(query)) return _entries.ToList();
-        var q = query.ToLower().Trim();
+        var q = query.Trim();
         return _entries.Where(e =>
             e.Word.Contains(q, StringComparison.OrdinalIgnoreCase) ||
             e.Definition.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-            e.ArabicTranslation.Contains(q, StringComparison.OrdinalIgnoreCase))
+            e.ArabicTranslation.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+            e.Sentence.Contains(q, StringComparison.OrdinalIgnoreCase))
             .ToList();
     }
 
@@ -108,6 +147,18 @@ public class HistoryService
     {
         _entries.Clear();
         Save();
+    }
+
+    /// <summary>Waits for queued writes to reach the disk. Called on exit: the writes run on the
+    /// thread pool, and the process ending under one of them dropped the last lookups of the
+    /// session.</summary>
+    public void Flush(TimeSpan timeout)
+    {
+        Task pending;
+        lock (_saveChainLock) pending = _pendingSave;
+
+        try { pending.Wait(timeout); }
+        catch (Exception ex) { Log.Warning(ex, "History flush failed"); }
     }
 
     private void Save()
@@ -125,7 +176,7 @@ public class HistoryService
         try
         {
             var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(HistoryPath, json);
+            AtomicFile.WriteAllText(HistoryPath, json);
         }
         catch (Exception ex)
         {
@@ -141,12 +192,15 @@ public class HistoryService
             {
                 var json = File.ReadAllText(HistoryPath);
                 var loaded = JsonSerializer.Deserialize<List<HistoryEntry>>(json);
-                if (loaded != null) _entries.AddRange(loaded);
+                if (loaded != null) _entries.AddRange(loaded.Where(e => e != null));
             }
         }
         catch (Exception ex)
         {
+            // The next save would otherwise overwrite the unreadable file with an empty list,
+            // turning one bad byte into every lookup the user ever made being gone.
             Log.Warning(ex, "Failed to load history from {Path}", HistoryPath);
+            AtomicFile.KeepCorruptCopy(HistoryPath);
         }
     }
 }

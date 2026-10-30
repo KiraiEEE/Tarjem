@@ -5,7 +5,7 @@
 ; Silent:     TarjemSetup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 
 #define MyAppName "Tarjem"
-#define MyAppVersion "0.5.0"
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "KiraiEEE"
 #define MyAppURL "https://kiraieee.github.io"
 #define MyAppExeName "Tarjem.exe"
@@ -77,10 +77,10 @@ Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Excludes: "*.pdb,.env,*.env";    
 ; The bundled free API keys, obfuscated (never a plaintext .env). "skipifsourcedoesntexist" so a
 ; build made without running `Tarjem.exe --pack-keys` still packages; the app then runs on the
 ; keyless sources, which are the defaults anyway.
-Source: "{#MyPublishDir}undled.keys"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#MyPublishDir}\bundled.keys"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "English to Arabic screen translator"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Screen translator overlay"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 

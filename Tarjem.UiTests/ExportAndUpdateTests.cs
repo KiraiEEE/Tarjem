@@ -70,6 +70,29 @@ public class VocabularyExporterTests
     }
 
     [Fact]
+    public void AnkiEscapesHtmlBecauseTheDeckIsImportedAsHtml()
+    {
+        var entry = Entry();
+        entry.Definition = "Less than (<), as in R&D <b>";
+
+        var content = ExportToTemp([entry], ExportFormat.Anki);
+
+        Assert.Contains("Less than (&lt;), as in R&amp;D &lt;b&gt;", content);
+        Assert.DoesNotContain("<b>", content);
+    }
+
+    [Fact]
+    public void AnkiKeepsLineBreaksAsBreaksWhateverTheLineEnding()
+    {
+        var entry = Entry();
+        entry.Sentence = "One.\r\nTwo.\nThree.\rFour.";
+
+        var content = ExportToTemp([entry], ExportFormat.Anki);
+
+        Assert.Contains("One.<br>Two.<br>Three.<br>Four.", content);
+    }
+
+    [Fact]
     public void CsvQuotesEmbeddedCommasAndQuotes()
     {
         var content = ExportToTemp([Entry()], ExportFormat.Csv);

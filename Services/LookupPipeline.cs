@@ -151,19 +151,37 @@ public sealed class LookupPipeline
     {
         // Both spellings, because which one the lookup will settle on isn't known until it runs -
         // and the cache is keyed on the answer, not on the guess.
-        if (match.WasCorrected && _history.IsCached(match.Raw))
-            return _history.GetCached(match.Raw);
+        var scope = CacheScope(match.Context, languageTag);
 
-        if (_history.IsCached(match.Target))
-            return _history.GetCached(match.Target);
+        if (match.WasCorrected && _history.GetCached(scope + match.Raw) is { } cachedRaw)
+            return cachedRaw;
+
+        if (_history.GetCached(scope + match.Target) is { } cached)
+            return cached;
 
         var result = await _translation.TranslateWord(match.Target, match.Context, languageTag, ct, match.Raw);
 
         // Keyed on the word actually answered about. Keying it on the correction meant a confirmed
         // reading of "governorate" was filed under "governor", and the next hover on "governor"
         // got the wrong entry back out of the cache.
-        _history.CacheResult(result.OriginalWord, result);
+        _history.CacheResult(scope + result.OriginalWord, result);
         return result;
+    }
+
+    /// <summary>
+    /// Everything besides the word that shapes the answer. The cache used to be keyed on the word
+    /// alone, so hovering "bank" in a second sentence brought back the first sentence and its
+    /// translation, and changing the target language kept serving answers in the old one until
+    /// restart. The section toggles are in here because a hidden section is never fetched - a
+    /// result cached with the translation off has no translation to show once it's turned on.
+    /// </summary>
+    private string CacheScope(string context, string languageTag)
+    {
+        var s = _settings.Current;
+        return string.Join('\u001F',
+            languageTag, s.TargetLanguage, s.DefaultDictionaryProvider, s.DefaultTranslationProvider,
+            s.ShowDictionarySection, s.ShowTranslationSection, s.ShowInlineWordTranslation,
+            s.EncyclopediaFallbackEnabled, context.Trim(), "");
     }
 
     /// <summary>

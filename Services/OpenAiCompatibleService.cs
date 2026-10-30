@@ -60,7 +60,7 @@ public sealed class OpenAiCompatibleService
 
             return string.IsNullOrWhiteSpace(content) ? null : content.Trim();
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "{Provider} text translation failed", Id);
@@ -91,7 +91,7 @@ public sealed class OpenAiCompatibleService
 
             return string.IsNullOrWhiteSpace(translatedWord) ? null : (translatedWord, translatedSentence);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "{Provider} word translation failed", Id);
@@ -119,7 +119,7 @@ public sealed class OpenAiCompatibleService
 
             return EncyclopediaAnswerParser.Parse(content);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "{Provider} encyclopedia lookup failed", Id);
@@ -136,7 +136,7 @@ public sealed class OpenAiCompatibleService
             var reply = await CompleteAsync("You are a test endpoint.", "Reply with the single word: ok", maxTokens: 8, temperature: 0, ct);
             return !string.IsNullOrWhiteSpace(reply);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "{Provider} connection test failed", Id);

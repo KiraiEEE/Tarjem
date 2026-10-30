@@ -108,7 +108,7 @@ public sealed class EncyclopediaService
 
             return new EncyclopediaEntry(title, FirstSentences(summary, maxSummaryLength), description, sourceUrl);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Wikipedia lookup failed for {Term}", term);
@@ -156,7 +156,7 @@ public sealed class EncyclopediaService
                 Description: null,
                 SourceUrl: id is null ? url : $"https://www.wikidata.org/wiki/{id}");
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Wikidata lookup failed for {Term}", term);

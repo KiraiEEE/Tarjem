@@ -79,7 +79,7 @@ public class SettingsService
         try
         {
             var json = JsonSerializer.Serialize(Current, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(SettingsPath, json);
+            AtomicFile.WriteAllText(SettingsPath, json);
         }
         catch (Exception ex)
         {
@@ -103,6 +103,7 @@ public class SettingsService
         catch (Exception ex)
         {
             Log.Warning(ex, "Failed to load settings from {Path}, using defaults", SettingsPath);
+            AtomicFile.KeepCorruptCopy(SettingsPath);
         }
 
         return new AppSettings();

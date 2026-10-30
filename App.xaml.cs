@@ -120,6 +120,9 @@ public partial class App : Application
         {
             try { _ocrService.WarmUp(warmUpLanguage); }
             catch (Exception ex) { Log.Debug(ex, "OCR warm-up for {Language} failed", warmUpLanguage); }
+
+            // Same reason: the first popup decides whether to show its speaker button.
+            PronunciationService.WarmUp();
         });
 
         _regionTranslationService = new RegionTranslationService(
@@ -508,6 +511,7 @@ public partial class App : Application
         _hotkeyService?.Dispose();
         _regionTranslationService?.Dispose();
         _selectionService?.Dispose();
+        _historyService?.Flush(TimeSpan.FromSeconds(3));
         _trayIcon?.Dispose();
         _hwndSource?.Dispose();
         _singleInstanceGuard?.Dispose();

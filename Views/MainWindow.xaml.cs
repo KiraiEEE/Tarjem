@@ -426,12 +426,35 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private void ApplyFilter()
     {
+        // Fires from the combos' SelectionChanged while InitializeComponent is still building the
+        // page, before the list and search box below them exist.
+        if (HistoryList == null || SearchBox == null) return;
+
         var query = SearchBox.Text;
-        var filtered = string.IsNullOrWhiteSpace(query)
+        IEnumerable<HistoryEntry> filtered = string.IsNullOrWhiteSpace(query)
             ? _allEntries
             : _history.Search(query);
-        UpdateDisplay(filtered);
+
+        if ((HistoryLevelCombo?.SelectedItem as ComboBoxItem)?.Tag is string { Length: > 0 } level)
+            filtered = filtered.Where(e => string.Equals(e.CefrLevel, level, StringComparison.OrdinalIgnoreCase));
+
+        // OrderBy is stable, so ties keep the most-recent-first order the history is stored in.
+        filtered = ((HistorySortCombo?.SelectedItem as ComboBoxItem)?.Tag as string) switch
+        {
+            "count" => filtered.OrderByDescending(e => e.LookupCount),
+            "alpha" => filtered.OrderBy(e => e.Word, StringComparer.CurrentCultureIgnoreCase),
+            "level" => filtered.OrderByDescending(e => CefrRank(e.CefrLevel)),
+            _ => filtered,
+        };
+
+        UpdateDisplay(filtered.ToList());
     }
+
+    /// <summary>A1 → 1 … C2 → 6; anything unlevelled sorts last.</summary>
+    private static int CefrRank(string level) =>
+        Array.IndexOf(["A1", "A2", "B1", "B2", "C1", "C2"], level.Trim().ToUpperInvariant()) + 1;
+
+    private void HistoryFilter_Changed(object sender, SelectionChangedEventArgs e) => ApplyFilter();
 
     private void UpdateDisplay(List<HistoryEntry> entries)
     {
@@ -447,6 +470,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         HistoryList.ItemsSource = new List<HistoryEntry>(entries);
         EmptyState.Visibility = entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         CountText.Text = $"{entries.Count} translation{(entries.Count != 1 ? "s" : "")}";
+
+        // The hint named Alt+Q whatever the shortcut had been rebound to, and claimed there was
+        // nothing saved when a search or filter was simply hiding everything.
+        var filtering = _allEntries.Count > 0;
+        EmptyStateTitle.Text = filtering ? "No matches" : "No translations yet";
+        EmptyStateHint.Text = filtering
+            ? "Try a different search or level"
+            : $"Press {_settings.Current.WordHotkey.Display} anywhere to translate a word";
 
         if (entries.Count == 0)
         {
@@ -501,12 +532,44 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         DetailArabicText.Text = string.IsNullOrEmpty(entry.ArabicTranslation) ? "—" : entry.ArabicTranslation;
 
+        // The label said "ARABIC TRANSLATION" and the text was pinned right-to-left whatever the
+        // target language was, so a French answer came out mislabelled and mirrored.
+        var targetName = TranslationService.TargetLanguages.FirstOrDefault(l => l.Code == entry.TargetLanguage).Name;
+        DetailTranslationLabel.Text = targetName != null ? $"{targetName.ToUpperInvariant()} TRANSLATION" : "TRANSLATION";
+        ApplyTranslationDirection(DetailArabicText, entry, 20);
+        ApplyTranslationDirection(DetailTranslatedSentenceText, entry, 14);
+
+        DetailSpeakButton.Visibility = PronunciationService.CanSpeak(SpeechLanguageFor(entry))
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
         var hasSentence = !string.IsNullOrEmpty(entry.Sentence) && !string.IsNullOrEmpty(entry.TranslatedSentence);
         DetailSentencePanel.Visibility = hasSentence ? Visibility.Visible : Visibility.Collapsed;
         DetailSentenceText.Text = entry.Sentence;
         DetailTranslatedSentenceText.Text = entry.TranslatedSentence;
 
-        DetailTimestampText.Text = $"Looked up {entry.Timestamp:MMM d, yyyy 'at' h:mm tt}";
+        DetailTimestampText.Text = entry.LookupCount > 1
+            ? $"Looked up {entry.LookupCount} times · first on {entry.FirstLookedUp ?? entry.Timestamp:MMM d, yyyy}, last on {entry.Timestamp:MMM d, yyyy 'at' h:mm tt}"
+            : $"Looked up {entry.Timestamp:MMM d, yyyy 'at' h:mm tt}";
+    }
+
+    private static void ApplyTranslationDirection(TextBlock block, HistoryEntry entry, double size)
+    {
+        var isRtl = entry.IsTranslationRtl;
+        block.FlowDirection = entry.TranslationFlowDirection;
+        block.FontFamily = UiFonts.For(isRtl);
+        block.FontSize = UiFonts.SizeFor(size, isRtl);
+    }
+
+    /// <summary>Entries saved before the source language was recorded were read in whatever the
+    /// source setting is now, as far as anyone can tell.</summary>
+    private string SpeechLanguageFor(HistoryEntry entry) =>
+        entry.SourceLanguage.Length > 0 ? entry.SourceLanguage : _settings.Current.SourceLanguage;
+
+    private async void DetailSpeak_Click(object sender, RoutedEventArgs e)
+    {
+        if (HistoryList.SelectedItem is not HistoryEntry entry) return;
+        await PronunciationService.SpeakAsync(entry.Word, SpeechLanguageFor(entry));
     }
 
     private void DeleteEntry_Click(object sender, RoutedEventArgs e)
@@ -534,8 +597,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     /// </summary>
     private void ExportHistory_Click(object sender, RoutedEventArgs e)
     {
+        // What's on screen, so a search or a level filter doubles as "export just these words".
+        var shown = (HistoryList.ItemsSource as IEnumerable<HistoryEntry>)?.ToList() ?? _allEntries;
+
         // Nothing to say when there's nothing to export - the empty history is already on screen.
-        if (_allEntries.Count == 0) return;
+        if (shown.Count == 0) return;
 
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
@@ -550,7 +616,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         try
         {
             VocabularyExporter.Export(
-                _history.Entries, dialog.FileName, VocabularyExporter.FormatForPath(dialog.FileName));
+                shown, dialog.FileName, VocabularyExporter.FormatForPath(dialog.FileName));
         }
         catch (Exception ex)
         {
