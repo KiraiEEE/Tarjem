@@ -9,10 +9,13 @@
 #define MyAppPublisher "KiraiEEE"
 #define MyAppURL "https://kiraieee.github.io"
 #define MyAppExeName "Tarjem.exe"
-#define MyPublishDir "..\bin\Release\net8.0-windows10.0.19041.0\win-x64"
+; Output of: dotnet publish Tarjem.csproj -c Release -r win-x64 --self-contained false -o bin\publish\win-x64
+#define MyPublishDir "..\bin\publish\win-x64"
 #define DotNetRuntimeVersion "8.0"
-#define DotNetRuntimeInstaller "windowsdesktop-runtime-8.0.11-win-x64.exe"
-#define DotNetRuntimeUrl "https://download.visualstudio.microsoft.com/download/pr/907765b0-0588-4258-b156-291f15088041/c8eabb02b08c03e29f1f8b05c3c44f39/windowsdesktop-runtime-8.0.11-win-x64.exe"
+; Microsoft's evergreen link: always resolves to the newest 8.0.x Windows Desktop Runtime, so the
+; installer never goes stale the way a pinned download/pr/... URL does.
+#define DotNetRuntimeUrl "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe"
+#define DotNetRuntimeFile "windowsdesktop-runtime-8.0-win-x64.exe"
 
 [Setup]
 AppId={{B8A3C4D5-E6F7-4A8B-9C0D-1E2F3A4B5C6D}
@@ -28,7 +31,9 @@ AllowNoIcons=yes
 OutputDir=Output
 OutputBaseFilename=TarjemSetup-{#MyAppVersion}
 Compression=lzma2/ultra64
-LZMANumBlockThreads=4
+LZMAUseSeparateProcess=yes
+LZMADictionarySize=1048576
+LZMANumFastBytes=273
 SolidCompression=yes
 WizardStyle=modern dark
 WizardSizePercent=100
@@ -88,13 +93,12 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Tarjem"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('https://download.visualstudio.microsoft.com/download/pr/907765b0-0588-4258-b156-291f15088041/c8eabb02b08c03e29f1f8b05c3c44f39/windowsdesktop-runtime-8.0.11-win-x64.exe', '{tmp}\dotnetruntime.exe')"""; StatusMsg: "Downloading .NET Desktop Runtime 8.0..."; Flags: runhidden waituntilterminated; Check: IsDotNetRequired
-Filename: "{tmp}\dotnetruntime.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing .NET Desktop Runtime 8.0..."; Flags: waituntilterminated; Check: IsDotNetRequired
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent unchecked
 
 [Code]
 var
   DotNetRequired: Boolean;
+  DownloadPage: TDownloadWizardPage;
 
 { Whether a .NET 8 (or newer) Windows Desktop runtime is present.
 
@@ -149,6 +153,70 @@ function InitializeSetup: Boolean;
 begin
   Result := True;
   DotNetRequired := not IsDotNet8Installed;
+  if DotNetRequired and not WizardSilent then
+  begin
+    if MsgBox('{#MyAppName} needs the Microsoft .NET {#DotNetRuntimeVersion} Desktop Runtime, which is not installed on this PC.' + #13#10#13#10 +
+              'Setup will download it from Microsoft (about 55 MB) and install it. Continue?',
+              mbConfirmation, MB_YESNO) = IDNO then
+      Result := False;
+  end;
+end;
+
+function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
+begin
+  Result := True;
+end;
+
+procedure InitializeWizard;
+begin
+  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing),
+    'Downloading the Microsoft .NET {#DotNetRuntimeVersion} Desktop Runtime...', @OnDownloadProgress);
+end;
+
+{ Installs the runtime before any app files are copied. Returning a non-empty string aborts setup
+  with that message, which is what we want: installing an app that cannot start helps nobody. }
+function InstallDotNet: String;
+var
+  ResultCode: Integer;
+  Installer: String;
+begin
+  Result := '';
+  DownloadPage.Clear;
+  DownloadPage.Add('{#DotNetRuntimeUrl}', '{#DotNetRuntimeFile}', '');
+  DownloadPage.Show;
+  try
+    try
+      DownloadPage.Download;
+    except
+      if DownloadPage.AbortedByUser then
+        Result := 'The .NET runtime download was cancelled.'
+      else
+        Result := 'Could not download the .NET {#DotNetRuntimeVersion} Desktop Runtime: ' + GetExceptionMessage + #13#10#13#10 +
+                  'Install it manually from https://dotnet.microsoft.com/download/dotnet/8.0 and run this setup again.';
+      Exit;
+    end;
+  finally
+    DownloadPage.Hide;
+  end;
+
+  Installer := ExpandConstant('{tmp}\{#DotNetRuntimeFile}');
+  WizardForm.StatusLabel.Caption := 'Installing the Microsoft .NET {#DotNetRuntimeVersion} Desktop Runtime...';
+  { The runtime installer needs admin rights; it raises its own UAC prompt even when this setup runs
+    per-user. 0 = success, 3010 = success but a reboot is pending, 1638 = a newer version exists. }
+  if not ShellExec('runas', Installer, '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := 'Could not start the .NET runtime installer: ' + SysErrorMessage(ResultCode)
+  else if (ResultCode <> 0) and (ResultCode <> 3010) and (ResultCode <> 1638) then
+    Result := 'The .NET runtime installer failed (exit code ' + IntToStr(ResultCode) + ').' + #13#10 +
+              'Install it manually from https://dotnet.microsoft.com/download/dotnet/8.0 and run this setup again.'
+  else if not IsDotNet8Installed then
+    Result := 'The .NET runtime installer finished but the runtime was not found. Please install it manually from https://dotnet.microsoft.com/download/dotnet/8.0';
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if DotNetRequired then
+    Result := InstallDotNet;
 end;
 
 function InitializeUninstall: Boolean;

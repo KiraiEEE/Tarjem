@@ -100,6 +100,15 @@ build is running and when it was compiled.
 
 Packaging with bundled API keys: put them in a `.env` beside the built exe, run
 `Tarjem.exe --pack-keys`, delete the `.env`, then build the installer.
+
+**Building a release:**
+```
+dotnet publish Tarjem.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -o bin\publish\win-x64
+# pack keys into bin\publish\win-x64 as above, and make sure no .env is left there
+iscc installer\TarjemSetup.iss        # -> installer\Output\TarjemSetup-<version>.exe
+```
+The installer checks for the .NET 8 Desktop Runtime and, if missing, downloads the latest 8.0.x
+from Microsoft and installs it before copying the app.
 **Never put a key in a `.cs` file.**
 
 ## Your data
