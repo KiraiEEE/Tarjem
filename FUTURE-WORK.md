@@ -110,11 +110,26 @@ resolves to "und" and splits every character apart, so Tarjem skips it and looks
 character (still translated in its sentence). A small bundled dictionary with forward maximum
 matching (~2 MB for the 100k most common words) would close the gap.
 
+## Small on-device models
+
+Considered in 0.8 for speed and offline use, and set aside for the same reason as offline mode
+above: every option costs far more than it returns for this app. A local translation model is
+75-600 MB and slower on CPU than a network round trip; PaddleOCR needs ONNX Runtime (~20 MB) and
+is only better than Windows OCR for CJK. The speed work went into the existing pipeline instead -
+one-pass OCR preprocessing (362 ms to 119 ms per read), warm connections, and showing the popup as
+soon as the first source answers.
+
+## Google rate limits
+
+The keyless Google endpoint answers 429 in bursts - measured in 0.8, the same request from two
+clients at the same moment got 429 on one and 200 on the other, and a configuration that got 429
+got 200 seconds later. It is not something a client setting fixes. Tarjem reconnects and retries
+once, then backs the source off and answers from the next one. If it becomes common, the official
+Cloud Translation API (keyed, 500k characters a month free) is the stable replacement.
+
 ## Ideas not yet started
 
 - Arabic diacritics (tashkeel) toggle for learners.
-- Spaced-repetition review inside the app: `LookupCount` and `FirstLookedUp` (added in 0.6) are
-  the start of the data it needs, so Anki is no longer the only way to study the list.
 - OCR correction for languages other than English — the current corrector and its frequency list
   are English-only, so non-English sources get the raw OCR token.
 - Golden-image tests for the OCR half: `WordMatcher` is now covered against hand-written

@@ -5,7 +5,7 @@
 ; Silent:     TarjemSetup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 
 #define MyAppName "Tarjem"
-#define MyAppVersion "0.7.0"
+#define MyAppVersion "0.8.0"
 #define MyAppPublisher "KiraiEEE"
 #define MyAppURL "https://kiraieee.github.io"
 #define MyAppExeName "Tarjem.exe"

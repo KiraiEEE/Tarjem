@@ -14,7 +14,10 @@
     <AssemblyName>Tarjem</AssemblyName>
     <RootNamespace>Tarjem</RootNamespace>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
-    <!-- 0.7.0: 36 languages with real auto-detect, a language picker on every result window and
+    <!-- 0.8.0: live mode for Alt+W, spaced-repetition review, failures that say what happened,
+         a 3x faster OCR read, a popup that appears with the first answer, provider health with
+         back-off, and AI translation that falls back to other AI sources before Google.
+         0.7.0: 36 languages with real auto-detect, a language picker on every result window and
          in the tray, Alt+W redrawing text in place in its own colours and size, and Alt+Q reading
          small text, Japanese words and Hindi/Arabic marks correctly.
          0.6.0: pronunciation audio, a lookup counter with sort/level filters on History, and
@@ -22,9 +25,9 @@
          0.5.0 rather than 0.4.x: that release added a third hotkey, copy-to-translate, vocabulary
          export and English as a target language, and moves API keys into encrypted storage. That
          is a feature release, not a patch. -->
-    <Version>0.7.0</Version>
-    <AssemblyVersion>0.7.0.0</AssemblyVersion>
-    <FileVersion>0.7.0.0</FileVersion>
+    <Version>0.8.0</Version>
+    <AssemblyVersion>0.8.0.0</AssemblyVersion>
+    <FileVersion>0.8.0.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

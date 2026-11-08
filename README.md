@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%2B-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/.NET-8.0-purple" alt=".NET 8" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-  <img src="https://img.shields.io/badge/version-0.7.0-orange" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.8.0-orange" alt="Version" />
 </p>
 
 <p align="center">
@@ -64,6 +64,13 @@ its own text colour and at its own size. A blue button stays a blue button, a he
 heading, and everything in the selection that wasn't text is left exactly as it was. The eye
 button above the selection shows the original again; clicking anywhere else closes it.
 
+**Live mode** is for dialogue and subtitles: click *Live* above the translated region and Tarjem
+keeps watching it, translating each new line as it appears. The overlay lets clicks through to the
+game underneath, and a small bar beside the region pauses it, shows the original, or stops it. It
+only does real work when the text changes - between lines it compares a tiny thumbnail - and a
+line it has already translated comes straight from the cache. Esc doesn't stop it, since games use
+Esc for their menus; the bar or a new <kbd>Alt</kbd>+<kbd>W</kbd> does.
+
 If you'd rather read the whole translation on one card - over a busy or moving game scene, say -
 set **Style** to *Panel* under Settings → Overlays. Tarjem also falls back to the panel on its own
 when a translator merges or splits lines, because one readable block is better than lines in the
@@ -95,6 +102,11 @@ from. Looking a word up again doesn't add a duplicate: it moves the word to the 
 so **Most looked up** on the History page shows the words you keep forgetting. You can also sort
 A to Z or hardest first, and filter by level.
 
+**Review** turns the list into practice: spaced repetition with Anki's four buttons (*Again*,
+*Hard*, *Good*, *Easy* - or keys 1-4, Space to reveal), over the words you've looked up. A missed
+word comes back in ten minutes, a known one at growing intervals. Open it from the History page or
+the tray icon, which both show how many words are due.
+
 **Export** writes the words on screen as an Anki deck (tab-separated, with the import directives
 already set) or a CSV, so a search or a level filter doubles as "export just these".
 
@@ -102,6 +114,18 @@ already set) or a CSV, so a search or a level filter doubles as "export just the
 word with the speech voices built into Windows. It works offline. The button appears only when a
 voice for that language is installed; you can add more in Windows Settings → Time & language →
 Speech.
+
+## When something goes wrong
+
+Tarjem says so instead of doing nothing: a short note by the cursor when there's no text under it,
+when you're offline, or when a lookup takes too long; a clear line in the popup or overlay when no
+translation service answered. A service that fails or rate-limits is tried last for a while, so
+one bad source doesn't slow every lookup down, and a failed answer is never cached. Each lookup
+writes one line to the log - stages, timings and which source answered, never the text - so a
+problem can be traced (Settings → About → Open logs folder).
+
+Games in exclusive fullscreen can't have anything drawn over them; Tarjem notices and says so once,
+with the fix (switch the game to borderless or windowed fullscreen).
 
 ## Languages
 
