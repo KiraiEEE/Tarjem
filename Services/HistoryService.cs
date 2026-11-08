@@ -153,7 +153,9 @@ public class HistoryService
         // Looking a word up again doesn't reset what review has learned about it.
         entry.ReviewDue = previous.ReviewDue;
         entry.ReviewIntervalDays = previous.ReviewIntervalDays;
-        entry.ReviewEase = previous.ReviewEase;
+        entry.ReviewStability = previous.ReviewStability;
+        entry.ReviewDifficulty = previous.ReviewDifficulty;
+        entry.ReviewLast = previous.ReviewLast;
         entry.ReviewCount = previous.ReviewCount;
         entry.ReviewLapses = previous.ReviewLapses;
 

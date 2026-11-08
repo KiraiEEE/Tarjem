@@ -101,7 +101,8 @@ public sealed class OpenAiCompatibleService
     /// <summary>Translates a block of text. Returns null on any failure so the caller's failover
     /// chain can move on - these providers are alternatives to each other, never the last word.</summary>
     public async Task<string?> TranslateTextAsync(
-        string text, string sourceLanguageName, string targetLanguageName, CancellationToken ct = default)
+        string text, string sourceLanguageName, string targetLanguageName, CancellationToken ct = default,
+        IReadOnlyList<(string Source, string Translation)>? context = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
 
@@ -109,7 +110,7 @@ public sealed class OpenAiCompatibleService
         {
             var content = await CompleteAsync(
                 TranslationPrompts.SystemInstruction(targetLanguageName),
-                TranslationPrompts.TextTranslationRequest(text, sourceLanguageName, targetLanguageName),
+                TranslationPrompts.TextTranslationRequest(text, sourceLanguageName, targetLanguageName, context),
                 maxTokens: 2048, TranslationPrompts.RewriteTemperature, ct);
 
             return string.IsNullOrWhiteSpace(content) ? null : content.Trim();

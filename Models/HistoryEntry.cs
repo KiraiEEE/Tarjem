@@ -43,19 +43,23 @@ public class HistoryEntry
     /// <summary>When the word is next due for review; null until it has been reviewed once.</summary>
     public DateTime? ReviewDue { get; set; }
     public double ReviewIntervalDays { get; set; }
-    public double ReviewEase { get; set; }
+    public double ReviewStability { get; set; }
+    public double ReviewDifficulty { get; set; }
+    public DateTime? ReviewLast { get; set; }
     public int ReviewCount { get; set; }
     public int ReviewLapses { get; set; }
 
     [JsonIgnore]
     public Tarjem.Core.Learning.ReviewState Review
     {
-        get => new(ReviewDue, ReviewIntervalDays, ReviewEase <= 0 ? Tarjem.Core.Learning.ReviewScheduler.StartingEase : ReviewEase, ReviewCount, ReviewLapses);
+        get => new(ReviewDue, ReviewIntervalDays, ReviewStability, ReviewDifficulty, ReviewCount, ReviewLapses, ReviewLast);
         set
         {
             ReviewDue = value.Due;
             ReviewIntervalDays = value.IntervalDays;
-            ReviewEase = value.Ease;
+            ReviewStability = value.Stability;
+            ReviewDifficulty = value.Difficulty;
+            ReviewLast = value.LastReview;
             ReviewCount = value.Reviews;
             ReviewLapses = value.Lapses;
         }

@@ -53,6 +53,11 @@ public class RegionTranslationService : IDisposable
     private bool _liveBusy;
     private bool _liveShowingOriginal;
 
+    /// <summary>The last few lines live mode translated, oldest first - the conversation so far,
+    /// handed to the AI with each new line so speakers, names and terms stay consistent.</summary>
+    private readonly List<(string Source, string Translation)> _liveHistory = new();
+    private const int LiveContextLines = 4;
+
     /// <summary>Fires when a region translation completes.</summary>
     public event EventHandler<TranslationResult>? TranslationCompleted;
 
@@ -257,23 +262,16 @@ public class RegionTranslationService : IDisposable
         RecognizedText? ocr;
         string language;
 
+        IReadOnlyList<string>? candidates = null;
         if (settings.AutoDetectSourceLanguage)
         {
-            var candidates = OcrService.InstalledLanguages();
+            candidates = OcrService.InstalledLanguages();
             if (candidates.Count == 0) candidates = [settings.SourceLanguage];
-
-            var detected = await _ocrService.DetectAndRecognizeAsync(bitmap, candidates, settings.SourceLanguage, ct);
-            ct.ThrowIfCancellationRequested();
-            if (detected == null) return null;
-
-            ocr = detected.Value.Result;
-            language = detected.Value.LanguageTag;
         }
-        else
-        {
-            (ocr, language) = await _ocrService.RecognizeWithLanguageAsync(bitmap, settings.SourceLanguage);
-            ct.ThrowIfCancellationRequested();
-        }
+
+        var read = await _ocrService.RecognizeAdaptiveAsync(bitmap, settings.SourceLanguage, candidates, ct);
+        if (read == null) return null;
+        (ocr, language) = read.Value;
 
         if (ocr == null || ocr.Lines.Count == 0) return null;
 
@@ -298,8 +296,15 @@ public class RegionTranslationService : IDisposable
         }
 
         var started = System.Diagnostics.Stopwatch.StartNew();
+        var context = IsLive && _liveHistory.Count > 0 ? _liveHistory.ToList() : null;
         var translated = await _translationService.TranslateBlockAsync(
-            reading.Provider, reading.Text, reading.LanguageTag, reading.SourceIsGuess, ct);
+            reading.Provider, reading.Text, reading.LanguageTag, reading.SourceIsGuess, ct, context);
+
+        if (IsLive && translated != null)
+        {
+            _liveHistory.Add((reading.Text, translated.Text));
+            if (_liveHistory.Count > LiveContextLines) _liveHistory.RemoveAt(0);
+        }
         ct.ThrowIfCancellationRequested();
 
         if (!ReferenceEquals(overlay, _overlayWindow)) return;
@@ -357,6 +362,11 @@ public class RegionTranslationService : IDisposable
 
         var text = translated?.Text ?? reading.Text;
         var lines = text.Replace("\r\n", "\n").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+
+        // One block, several lines back: a model breaking a long line in two. With a single block
+        // there is no doubt where they belong, so join them rather than give up on the layout.
+        if (reading.Blocks.Count == 1 && lines.Count > 1)
+            lines = [string.Join(" ", lines)];
 
         var inPlace = settings.RegionDisplayMode != "Panel"
                       && translated != null
@@ -630,6 +640,9 @@ public class RegionTranslationService : IDisposable
         if (!ReferenceEquals(overlay, _overlayWindow) || !overlay.CanGoLive || _liveTimer != null) return;
 
         overlay.EnterLive();
+        _liveHistory.Clear();
+        if (_reading != null && !string.IsNullOrWhiteSpace(overlay.CurrentTranslatedText))
+            _liveHistory.Add((_reading.Text, overlay.CurrentTranslatedText));
 
         // Esc no longer ends it: it's the pause-menu key in most games, and it also closes an
         // Alt+Q popup opened over the subtitles. The bar's stop button, or Alt+W, ends live mode.
@@ -738,6 +751,7 @@ public class RegionTranslationService : IDisposable
         try { _liveBar?.Close(); } catch { }
         _liveBar = null;
         _liveShownSignature = _livePendingSignature = null;
+        _liveHistory.Clear();
         Log.Information("Alt+W: live mode stopped");
     }
 

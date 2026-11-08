@@ -68,7 +68,9 @@ button above the selection shows the original again; clicking anywhere else clos
 keeps watching it, translating each new line as it appears. The overlay lets clicks through to the
 game underneath, and a small bar beside the region pauses it, shows the original, or stops it. It
 only does real work when the text changes - between lines it compares a tiny thumbnail - and a
-line it has already translated comes straight from the cache. Esc doesn't stop it, since games use
+line it has already translated comes straight from the cache. With an AI source, each new line is
+translated with the previous few as context, so who is speaking, names and gendered forms stay
+consistent across a conversation. Esc doesn't stop it, since games use
 Esc for their menus; the bar or a new <kbd>Alt</kbd>+<kbd>W</kbd> does.
 
 If you'd rather read the whole translation on one card - over a busy or moving game scene, say -
@@ -103,8 +105,10 @@ so **Most looked up** on the History page shows the words you keep forgetting. Y
 A to Z or hardest first, and filter by level.
 
 **Review** turns the list into practice: spaced repetition with Anki's four buttons (*Again*,
-*Hard*, *Good*, *Easy* - or keys 1-4, Space to reveal), over the words you've looked up. A missed
-word comes back in ten minutes, a known one at growing intervals. Open it from the History page or
+*Hard*, *Good*, *Easy* - or keys 1-4, Space to reveal), over the words you've looked up. It is
+scheduled with FSRS-5, the algorithm Anki now recommends over SM-2: each word gets a memory
+stability and difficulty, and comes back when you're predicted to be at 90% recall - the same
+retention for fewer reviews. A missed word comes back in ten minutes. Open it from the History page or
 the tray icon, which both show how many words are due.
 
 **Export** writes the words on screen as an Anki deck (tab-separated, with the import directives
@@ -114,6 +118,13 @@ already set) or a CSV, so a search or a level filter doubles as "export just the
 word with the speech voices built into Windows. It works offline. The button appears only when a
 voice for that language is installed; you can add more in Windows Settings → Time & language →
 Speech.
+
+## Speed
+
+Screen reading adapts to the text: a quick pass at native resolution reads ordinary interface text
+(14 px and up) completely, and only small text is read again at a higher scale. Measured on Windows
+OCR, that made 14-28 px text 2-3x faster and 8-12 px text noticeably more accurate than the fixed
+2x upscale it replaced. The popup appears as soon as the first source answers.
 
 ## When something goes wrong
 

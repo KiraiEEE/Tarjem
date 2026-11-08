@@ -89,6 +89,29 @@ public class ReviewSchedulerTests
     }
 
     [Fact]
+    public void TheForgettingCurvePassesNinetyPercentAtOneStability()
+    {
+        Assert.Equal(0.9, ReviewScheduler.Retrievability(10, 10), 6);
+        Assert.Equal(1.0, ReviewScheduler.Retrievability(0, 10), 6);
+        Assert.True(ReviewScheduler.Retrievability(30, 10) < 0.9);
+
+        // At 90% desired retention, the interval equals the stability.
+        Assert.Equal(7.5, ReviewScheduler.IntervalFor(7.5), 6);
+    }
+
+    [Theory]
+    // FSRS-5 initial stabilities w0..w3, rounded to whole days (at least one).
+    [InlineData(ReviewGrade.Hard, 1)]
+    [InlineData(ReviewGrade.Good, 3)]
+    [InlineData(ReviewGrade.Easy, 16)]
+    public void FirstAnswersUseTheDefaultInitialStabilities(ReviewGrade grade, double days)
+    {
+        var next = ReviewScheduler.Next(ReviewState.New, grade, Now);
+        Assert.Equal(days, next.IntervalDays);
+        Assert.Equal(Now.AddDays(days), next.Due);
+    }
+
+    [Fact]
     public void AMissedWordComesBackInTenMinutes()
     {
         var next = ReviewScheduler.Next(ReviewState.New, ReviewGrade.Again, Now);
@@ -98,47 +121,57 @@ public class ReviewSchedulerTests
     }
 
     [Fact]
-    public void GoodGrowsTheGapByTheEase()
+    public void RecallingOnTimeGrowsTheGap()
     {
-        var first = ReviewScheduler.Next(ReviewState.New, ReviewGrade.Good, Now);
-        Assert.Equal(1, first.IntervalDays);
-
-        var second = ReviewScheduler.Next(first, ReviewGrade.Good, Now.AddDays(1));
-        Assert.Equal(2.5, second.IntervalDays);
-
-        var third = ReviewScheduler.Next(second, ReviewGrade.Good, Now.AddDays(4));
-        Assert.Equal(6.3, third.IntervalDays, 1);
+        var s = ReviewScheduler.Next(ReviewState.New, ReviewGrade.Good, Now);
+        var t = Now;
+        var previous = s.IntervalDays;
+        for (var i = 0; i < 4; i++)
+        {
+            t = s.Due!.Value;
+            s = ReviewScheduler.Next(s, ReviewGrade.Good, t);
+            Assert.True(s.IntervalDays > previous, $"review {i}: {s.IntervalDays} after {previous}");
+            previous = s.IntervalDays;
+        }
     }
 
     [Fact]
-    public void ALapseResetsTheGapAndLowersTheEase()
+    public void ALapseCutsStabilityAndRaisesDifficulty()
     {
-        var known = new ReviewState(Now, 20, 2.5, 5, 0);
-        var missed = ReviewScheduler.Next(known, ReviewGrade.Again, Now);
+        var known = ReviewScheduler.Next(ReviewState.New, ReviewGrade.Good, Now);
+        known = ReviewScheduler.Next(known, ReviewGrade.Good, known.Due!.Value);
+        var when = known.Due!.Value;
 
-        Assert.Equal(0, missed.IntervalDays);
-        Assert.Equal(2.3, missed.Ease, 3);
+        var missed = ReviewScheduler.Next(known, ReviewGrade.Again, when);
+
+        Assert.True(missed.Stability < known.Stability);
+        Assert.True(missed.Difficulty > known.Difficulty);
         Assert.Equal(1, missed.Lapses);
+        Assert.Equal(when + ReviewScheduler.RelearnStep, missed.Due);
 
-        var relearned = ReviewScheduler.Next(missed, ReviewGrade.Good, Now.AddMinutes(10));
-        Assert.Equal(1, relearned.IntervalDays);
+        // Relearned the same day: back to at least a day.
+        var relearned = ReviewScheduler.Next(missed, ReviewGrade.Good, when.AddMinutes(10));
+        Assert.True(relearned.IntervalDays >= 1);
     }
 
     [Fact]
-    public void EaseNeverDropsBelowTheFloorAndIntervalsAreCapped()
+    public void BetterAnswersNeverScheduleSoonerAndIntervalsAreCapped()
     {
-        var s = new ReviewState(Now, 300, 1.35, 30, 3);
-        s = ReviewScheduler.Next(s, ReviewGrade.Hard, Now);
-        Assert.Equal(ReviewScheduler.MinimumEase, s.Ease, 3);
+        var s = ReviewScheduler.Next(ReviewState.New, ReviewGrade.Good, Now);
+        var t = s.Due!.Value;
+        var hard = ReviewScheduler.Next(s, ReviewGrade.Hard, t).IntervalDays;
+        var good = ReviewScheduler.Next(s, ReviewGrade.Good, t).IntervalDays;
+        var easy = ReviewScheduler.Next(s, ReviewGrade.Easy, t).IntervalDays;
+        Assert.True(hard < good && good < easy, $"{hard} {good} {easy}");
 
-        s = ReviewScheduler.Next(s with { IntervalDays = 300 }, ReviewGrade.Easy, Now);
-        Assert.Equal(ReviewScheduler.MaximumIntervalDays, s.IntervalDays);
+        var veteran = new ReviewState(Now, 300, 5000, 2, 40, 0, Now.AddDays(-300));
+        Assert.Equal(ReviewScheduler.MaximumIntervalDays, ReviewScheduler.Next(veteran, ReviewGrade.Easy, Now).IntervalDays);
     }
 
     [Theory]
     [InlineData(ReviewGrade.Again, "10 min")]
-    [InlineData(ReviewGrade.Good, "1 day")]
-    [InlineData(ReviewGrade.Easy, "4 days")]
+    [InlineData(ReviewGrade.Good, "3 days")]
+    [InlineData(ReviewGrade.Easy, "2 wk")]
     public void ButtonsDescribeWhatTheyDo(ReviewGrade grade, string expected) =>
         Assert.Equal(expected, ReviewScheduler.Describe(ReviewState.New, grade, Now));
 }

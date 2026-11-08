@@ -227,14 +227,14 @@ public class OcrService
     /// <summary>Runs OCR with a single, known source language - the normal (fast) path. Falls
     /// back to English if the requested language's Windows OCR pack isn't installed, so a stale
     /// setting (e.g. after uninstalling a language pack) degrades instead of throwing.</summary>
-    public async Task<RecognizedText?> RecognizeTextAsync(Bitmap bitmap, string languageTag, int upscale = DefaultUpscale) =>
+    public async Task<RecognizedText?> RecognizeTextAsync(Bitmap bitmap, string languageTag, double upscale = DefaultUpscale) =>
         (await RecognizeWithLanguageAsync(bitmap, languageTag, upscale)).Text;
 
     /// <summary>As <see cref="RecognizeTextAsync"/>, also reporting which language's engine
     /// actually read it. When the requested pack is missing that is the fallback's language, and
     /// labelling English OCR output "Ukrainian" sent the translator the wrong source.</summary>
     public async Task<(RecognizedText Text, string LanguageTag)> RecognizeWithLanguageAsync(
-        Bitmap bitmap, string languageTag, int upscale = DefaultUpscale)
+        Bitmap bitmap, string languageTag, double upscale = DefaultUpscale)
     {
         var engine = GetOrCreateEngine(languageTag);
         var usedTag = languageTag;
@@ -298,12 +298,13 @@ public class OcrService
     /// <param name="preferredLanguageTag">The user's configured source language. It represents its
     /// script in the first pass and wins every undecided call within it.</param>
     public async Task<(RecognizedText Result, string LanguageTag)?> DetectAndRecognizeAsync(
-        Bitmap bitmap, IReadOnlyList<string> candidateLanguageTags, string? preferredLanguageTag, CancellationToken ct)
+        Bitmap bitmap, IReadOnlyList<string> candidateLanguageTags, string? preferredLanguageTag, CancellationToken ct,
+        double upscale = DefaultUpscale)
     {
         var available = candidateLanguageTags.Where(tag => GetOrCreateEngine(tag) != null).ToList();
         if (available.Count == 0) return null;
 
-        var scale = EffectiveScale(bitmap, DefaultUpscale);
+        var scale = EffectiveScale(bitmap, upscale);
         using var softwareBitmap = await PrepareSoftwareBitmapAsync(bitmap, scale);
 
         var groups = available
@@ -336,6 +337,72 @@ public class OcrService
         }
 
         return (Convert(result, scale), languageTag);
+    }
+
+    /// <summary>
+    /// Recognizes at the upscale this text actually needs, measured rather than assumed.
+    ///
+    /// Tarjem used to upscale every capture 2x. Measured on Windows OCR (Segoe UI, 7-28 px, four
+    /// sentences, word accuracy):
+    ///
+    ///   px  | 1x     2x     3x     4x
+    ///    8  |   3%    57%    73%    62%
+    ///   10  |  46%    95%    97%    97%
+    ///   12  |  97%    95%   100%    95%
+    ///   14+ | 100%   100%   100%   ~100%   (but 2x took 2-4x as long as 1x)
+    ///
+    /// So small text wants 3x, large text wants no upscale at all, and 4x never helps. A quick
+    /// first pass at 1x - about 10 ms - reads large text completely and measures the rest; only
+    /// text that measured small is read again, at the scale the table says. Large text got faster;
+    /// small text got more accurate.
+    /// </summary>
+    /// <param name="detectAmong">Languages to detect among, or null to read in <paramref name="languageTag"/>.</param>
+    public async Task<(RecognizedText Text, string LanguageTag)?> RecognizeAdaptiveAsync(
+        Bitmap bitmap, string languageTag, IReadOnlyList<string>? detectAmong, CancellationToken ct)
+    {
+        async Task<(RecognizedText Text, string LanguageTag)?> At(double scale)
+        {
+            if (detectAmong == null)
+                return await RecognizeWithLanguageAsync(bitmap, languageTag, scale);
+
+            var detected = await DetectAndRecognizeAsync(bitmap, detectAmong, languageTag, ct, scale);
+            return detected == null ? null : (detected.Value.Result, detected.Value.LanguageTag);
+        }
+
+        var first = await At(1);
+        ct.ThrowIfCancellationRequested();
+
+        double rescale = DefaultUpscale;
+        if (first is { Text.IsEmpty: false } f)
+        {
+            var size = MedianFontSize(f.Text);
+            if (size >= LargeTextPx) return f;
+            rescale = size <= SmallTextPx ? 3 : 2;
+        }
+
+        var second = await At(rescale);
+        ct.ThrowIfCancellationRequested();
+        return second is { Text.IsEmpty: false } ? second : first;
+    }
+
+    /// <summary>At this font size and above, 1x reads everything (see <see cref="RecognizeAdaptiveAsync"/>).
+    /// Measured: 100% at 14 and 16 px, where a second pass only doubled the time - and 14-16 px is
+    /// the commonest size of interface text, so the margin above it was paid on most presses.</summary>
+    private const double LargeTextPx = 13;
+
+    /// <summary>At this size and below, 3x is clearly better than 2x.</summary>
+    private const double SmallTextPx = 12.5;
+
+    /// <summary>The median font size of the recognized lines, in source pixels.</summary>
+    private static double MedianFontSize(RecognizedText text)
+    {
+        var sizes = text.Lines
+            .Where(l => l.Words.Count > 0)
+            .Select(l => InkMetrics.FontSizeFromInk(l.Words.Max(w => w.Bounds.Bottom) - l.Words.Min(w => w.Bounds.Y), l.Text))
+            .Where(s => s > 0)
+            .OrderBy(s => s)
+            .ToList();
+        return sizes.Count == 0 ? 0 : sizes[sizes.Count / 2];
     }
 
     /// <summary>The language whose engine reads a script in the first pass: the user's own source

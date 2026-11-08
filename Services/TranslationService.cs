@@ -1389,8 +1389,11 @@ public class TranslationService
     /// <inheritdoc cref="TranslateTextWithFailoverAsync"/>
     /// <param name="sourceIsGuess">The source language is the app's guess; sources that can detect
     /// it are asked to, and the language they report comes back in the result.</param>
+    /// <param name="context">The lines translated just before this one in the same live session,
+    /// for AI sources to keep the conversation consistent. Keyless sources ignore it.</param>
     public async Task<BlockTranslation?> TranslateBlockAsync(
-        string preferredId, string text, string sourceLanguageCode, bool sourceIsGuess, CancellationToken ct = default)
+        string preferredId, string text, string sourceLanguageCode, bool sourceIsGuess, CancellationToken ct = default,
+        IReadOnlyList<(string Source, string Translation)>? context = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
 
@@ -1418,7 +1421,7 @@ public class TranslationService
         {
             ct.ThrowIfCancellationRequested();
             var translated = await WithinBudgetAsync(provider.Id, block: true,
-                t => TranslateTextWithOneAsync(provider.Id, text, sourceLanguageCode, sourceIsGuess, t), ct);
+                t => TranslateTextWithOneAsync(provider.Id, text, sourceLanguageCode, sourceIsGuess, t, context), ct);
 
             if (translated != null)
             {
@@ -1476,7 +1479,8 @@ public class TranslationService
     }
 
     private async Task<BlockTranslation?> TranslateTextWithOneAsync(
-        string providerId, string text, string sourceLanguageCode, bool sourceIsGuess, CancellationToken ct)
+        string providerId, string text, string sourceLanguageCode, bool sourceIsGuess, CancellationToken ct,
+        IReadOnlyList<(string Source, string Translation)>? context = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
 
@@ -1489,9 +1493,9 @@ public class TranslationService
         {
             RawTranslation translated = providerId switch
             {
-                "gemini" => new(await _gemini.Value.TranslateTextAsync(text, aiSourceName, tgtName, ct), null),
-                "groq" => new(Groq() is { } g ? await g.TranslateTextAsync(text, aiSourceName, tgtName, ct) : null, null),
-                "cerebras" => new(Cerebras() is { } c ? await c.TranslateTextAsync(text, aiSourceName, tgtName, ct) : null, null),
+                "gemini" => new(await _gemini.Value.TranslateTextAsync(text, aiSourceName, tgtName, ct, context), null),
+                "groq" => new(Groq() is { } g ? await g.TranslateTextAsync(text, aiSourceName, tgtName, ct, context) : null, null),
+                "cerebras" => new(Cerebras() is { } c ? await c.TranslateTextAsync(text, aiSourceName, tgtName, ct, context) : null, null),
                 "mymemory" => await MyMemoryTranslateAsync(text, srcCode, tgtCode, ct),
                 "lingva" => await LingvaTranslateAsync(text, keylessSource, tgtCode, ct),
                 _ => await GoogleTranslateAsync(text, keylessSource, tgtCode, ct),

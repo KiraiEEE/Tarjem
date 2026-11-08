@@ -80,7 +80,9 @@ public class ReliabilityFeatureTests
 
         history.RecordReview(due[0], ReviewGrade.Good, now);
         Assert.Single(history.DueForReview(now));
-        Assert.Equal(2, history.DueForReview(now.AddDays(2)).Count);
+        // FSRS-5 schedules a first "Good" three days out.
+        Assert.Single(history.DueForReview(now.AddDays(2)));
+        Assert.Equal(2, history.DueForReview(now.AddDays(4)).Count);
     });
 
     [Fact]

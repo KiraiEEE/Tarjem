@@ -105,13 +105,14 @@ public class GeminiService : ITranslationProvider
     /// Returns null if every model in the chain failed.
     /// </summary>
     public Task<string?> TranslateTextAsync(
-        string text, string sourceLanguageName, string targetLanguageName, CancellationToken ct = default)
+        string text, string sourceLanguageName, string targetLanguageName, CancellationToken ct = default,
+        IReadOnlyList<(string Source, string Translation)>? context = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return Task.FromResult<string?>(null);
 
         return RunTextChainAsync(
             TranslationPrompts.SystemInstruction(targetLanguageName),
-            TranslationPrompts.TextTranslationRequest(text, sourceLanguageName, targetLanguageName),
+            TranslationPrompts.TextTranslationRequest(text, sourceLanguageName, targetLanguageName, context),
             maxOutputTokens: 2048, TranslationPrompts.RewriteTemperature, ct);
     }
 

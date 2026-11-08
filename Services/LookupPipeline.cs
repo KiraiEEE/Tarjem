@@ -240,22 +240,15 @@ public sealed class LookupPipeline
     private async Task<(RecognizedText Text, string LanguageTag)?> RecognizeAsync(
         Bitmap bitmap, AppSettings settings, CancellationToken ct)
     {
-        if (!settings.AutoDetectSourceLanguage)
+        // Only the languages Windows can actually read here - one engine per script among them.
+        IReadOnlyList<string>? candidates = null;
+        if (settings.AutoDetectSourceLanguage)
         {
-            var (text, usedTag) = await _ocr.RecognizeWithLanguageAsync(bitmap, settings.SourceLanguage);
-            ct.ThrowIfCancellationRequested();
-            return (text, usedTag);
+            candidates = OcrService.InstalledLanguages();
+            if (candidates.Count == 0) candidates = [settings.SourceLanguage];
         }
 
-        // Only the languages Windows can actually read here - one engine per script among them.
-        var candidates = OcrService.InstalledLanguages();
-        if (candidates.Count == 0)
-            candidates = [settings.SourceLanguage];
-
-        var detected = await _ocr.DetectAndRecognizeAsync(bitmap, candidates, settings.SourceLanguage, ct);
-        ct.ThrowIfCancellationRequested();
-
-        return detected == null ? null : (detected.Value.Result, detected.Value.LanguageTag);
+        return await _ocr.RecognizeAdaptiveAsync(bitmap, settings.SourceLanguage, candidates, ct);
     }
 
     /// <summary>The Alt+Q path, with the in-memory cache in front of it. That cache is a speed

@@ -40,7 +40,7 @@ Match the register and tone of the original: casual stays casual, formal stays f
 
 Faithfulness comes first, fluency second. Natural phrasing never licenses changing what is said:
 - Never escalate or soften the tone. A mild word stays mild - do not turn ""kid"" into an insult, or an insult into something polite. Add no profanity, emphasis or emotion the original doesn't have.
-- Never invent facts, gender or relationships. When the original doesn't say who is speaking or being addressed, use the conventional default of {targetLanguageName} grammar (in Arabic, Polish and similar languages, the masculine) rather than guessing.
+- Never invent facts, gender or relationships. When the text says who is speaking or being addressed - or the earlier lines you are given do - every form must agree with that. Only when nothing says, use the conventional default of {targetLanguageName} grammar (in Arabic, Polish and similar languages, the masculine) rather than guessing.
 - Keep the same term for the same thing every time it appears.
 - The result must be grammatically correct {targetLanguageName}: check agreement, case, tense and word order before answering.
 
@@ -116,7 +116,14 @@ Writing {targetLanguageName}: natural {targetLanguageName} with full-width Chine
     /// before writing anything, and naming the specific literalisms (calqued idioms, English word
     /// order, translated UI verbs) that are the recognizable signature of machine translation.
     /// </summary>
-    public static string TextTranslationRequest(string text, string sourceLanguageName, string targetLanguageName) =>
+    /// <param name="context">Lines shown just before this text and how they were translated -
+    /// the conversation so far, in live mode. Given as context only, never to be translated again.
+    /// Document-level MT research (WMT 2024 sliding-window context; EMNLP 2023 on entity
+    /// consistency) finds that a few preceding sentences are what fixes pronouns, speaker
+    /// gender, names and repeated terms between lines - exactly what goes wrong when consecutive
+    /// lines of dialogue are translated as strangers.</param>
+    public static string TextTranslationRequest(string text, string sourceLanguageName, string targetLanguageName,
+        IReadOnlyList<(string Source, string Translation)>? context = null) =>
         $@"Rewrite this {sourceLanguageName} text in natural {targetLanguageName}.
 
 It was captured off a screen, so before you write anything, work out what kind of text it is - game or film dialogue, a menu or button, a heading, an error message, prose, a caption - and write what that kind of text would say in {targetLanguageName}. A menu item is a menu item in {targetLanguageName} too, phrased the way {targetLanguageName} software phrases it, not a translated English sentence.
@@ -133,10 +140,21 @@ Write it as though it had been authored in {targetLanguageName} in the first pla
 
 Each line below is one complete unit - a sentence or paragraph, a menu entry, a list item, a line of dialogue. Lines that merely wrapped on screen have already been joined, so never split a line and never merge two. Return the same number of lines in the same order, because the result is drawn back over the layout it came from - but within each line, restructure freely. The text was read by OCR and may contain recognition errors: infer what was meant and translate that, rather than reproducing an obvious typo. If a fragment is cut off mid-sentence, translate the fragment as a fragment; do not invent an ending for it.
 
-Return only the {targetLanguageName} text. No quotes, no commentary, no alternatives, no notes, nothing before or after it.
+Return only the {targetLanguageName} text. No quotes, no commentary, no alternatives, no notes, nothing before or after it.{ContextBlock(context, targetLanguageName)}
 
 Text:
 {text}";
+
+    private static string ContextBlock(IReadOnlyList<(string Source, string Translation)>? context, string targetLanguageName)
+    {
+        if (context is not { Count: > 0 }) return "";
+
+        var lines = string.Join("\n", context.Select(c => $"- {c.Source.Replace('\n', ' ')}  =>  {c.Translation.Replace('\n', ' ')}"));
+        return $@"
+
+It continues a conversation already on screen. These are the lines that came just before it and how they were translated into {targetLanguageName}. Use them to keep speakers, names, pronouns, tone and terms consistent: if they show who is speaking or being addressed - a woman, a man, a group - the new text must agree with it in every gendered and plural form. Do not translate them again and do not include them in your answer:
+{lines}";
+    }
 
     /// <summary>Word (Alt+Q) translation for providers that answer in plain text rather than
     /// structured JSON. Two bare lines are far more reliable from smaller models than a schema.</summary>
