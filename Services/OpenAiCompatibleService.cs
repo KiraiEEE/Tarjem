@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Serilog;
+using Tarjem.Core.Providers;
 using Tarjem.Core.Translation;
 
 namespace Tarjem.Services;
@@ -21,28 +22,81 @@ public sealed class OpenAiCompatibleService
 {
     private readonly HttpClient _http;
     private readonly string _endpoint;
-    private readonly string _model;
+    private readonly string[] _preferredModels;
 
     public string Id { get; }
 
-    private OpenAiCompatibleService(string id, string endpoint, string model, string apiKey, TimeSpan timeout)
+    /// <summary>The model each provider resolved to this session, shared across the clients
+    /// <see cref="TranslationService"/> rebuilds whenever a key changes.</summary>
+    private static readonly Dictionary<string, string> ResolvedModels = new();
+
+    private OpenAiCompatibleService(string id, string endpoint, string[] preferredModels, string apiKey, TimeSpan timeout)
     {
         Id = id;
         _endpoint = endpoint;
-        _model = model;
+        _preferredModels = preferredModels;
         _http = new HttpClient { Timeout = timeout };
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     }
 
-    /// <summary>Groq's Llama 3.3 70B: the best free-tier quality-per-millisecond available, and
-    /// fast enough to sit on the automatic path rather than only behind an explicit choice.</summary>
+    /// <summary>
+    /// Groq, best first. These providers retire models on short notice: llama-3.3-70b-versatile
+    /// was this app's only model until it disappeared, after which every Groq request failed with
+    /// model_not_found and nothing said so. The client now asks the provider which of these it
+    /// still serves and uses the best one, and asks again if that one goes away.
+    /// </summary>
     public static OpenAiCompatibleService ForGroq(string apiKey) => new(
-        "groq", "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile",
-        apiKey, TimeSpan.FromSeconds(8));
+        "groq", "https://api.groq.com/openai/v1/chat/completions",
+        ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"],
+        apiKey, TimeSpan.FromSeconds(10));
 
     public static OpenAiCompatibleService ForCerebras(string apiKey) => new(
-        "cerebras", "https://api.cerebras.ai/v1/chat/completions", "llama-3.3-70b",
-        apiKey, TimeSpan.FromSeconds(8));
+        "cerebras", "https://api.cerebras.ai/v1/chat/completions",
+        ["gpt-oss-120b", "llama-3.3-70b", "qwen-3-32b", "llama3.1-8b"],
+        apiKey, TimeSpan.FromSeconds(10));
+
+    private string ModelsEndpoint => _endpoint.Replace("/chat/completions", "/models");
+
+    /// <summary>The model to use: the best preferred one the provider lists, found once per session.</summary>
+    private async Task<string> ModelAsync(CancellationToken ct)
+    {
+        lock (ResolvedModels)
+        {
+            if (ResolvedModels.TryGetValue(Id, out var known)) return known;
+        }
+
+        var chosen = _preferredModels[0];
+        try
+        {
+            using var response = await _http.GetAsync(ModelsEndpoint, ct);
+            if (response.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                var offered = doc.RootElement.TryGetProperty("data", out var data)
+                    ? data.EnumerateArray()
+                        .Select(m => m.TryGetProperty("id", out var mid) ? mid.GetString() : null)
+                        .OfType<string>()
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    : new HashSet<string>();
+
+                chosen = _preferredModels.FirstOrDefault(offered.Contains) ?? chosen;
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (ProviderUnavailableException) { throw; }
+        catch (Exception ex)
+        {
+            Log.Information("{Provider}: could not list models ({Error}); trying {Model}", Id, ex.Message, chosen);
+        }
+
+        lock (ResolvedModels) ResolvedModels[Id] = chosen;
+        Log.Information("{Provider} using model {Model}", Id, chosen);
+        return chosen;
+    }
+
+    private static bool IsReasoningModel(string model) =>
+        model.Contains("gpt-oss", StringComparison.OrdinalIgnoreCase) ||
+        model.Contains("qwen3", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Translates a block of text. Returns null on any failure so the caller's failover
     /// chain can move on - these providers are alternatives to each other, never the last word.</summary>
@@ -61,6 +115,7 @@ public sealed class OpenAiCompatibleService
             return string.IsNullOrWhiteSpace(content) ? null : content.Trim();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (ProviderUnavailableException) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "{Provider} text translation failed", Id);
@@ -92,6 +147,7 @@ public sealed class OpenAiCompatibleService
             return string.IsNullOrWhiteSpace(translatedWord) ? null : (translatedWord, translatedSentence);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (ProviderUnavailableException) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "{Provider} word translation failed", Id);
@@ -120,6 +176,7 @@ public sealed class OpenAiCompatibleService
             return EncyclopediaAnswerParser.Parse(content);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (ProviderUnavailableException) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "{Provider} encyclopedia lookup failed", Id);
@@ -137,6 +194,7 @@ public sealed class OpenAiCompatibleService
             return !string.IsNullOrWhiteSpace(reply);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (ProviderUnavailableException) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "{Provider} connection test failed", Id);
@@ -146,38 +204,89 @@ public sealed class OpenAiCompatibleService
 
     private async Task<string?> CompleteAsync(string system, string user, int maxTokens, double temperature, CancellationToken ct)
     {
-        var body = new JsonObject
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            ["model"] = _model,
-            ["temperature"] = temperature,
-            ["max_tokens"] = maxTokens,
-            ["messages"] = new JsonArray(
-                new JsonObject { ["role"] = "system", ["content"] = system },
-                new JsonObject { ["role"] = "user", ["content"] = user }),
-        };
+            var model = await ModelAsync(ct);
+            var reasoning = IsReasoningModel(model);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint)
-        {
-            Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
-        };
+            var body = new JsonObject
+            {
+                ["model"] = model,
+                ["temperature"] = temperature,
+                // Reasoning models spend part of the budget thinking before they answer; without
+                // the headroom a translation was cut off, or came back empty.
+                ["max_tokens"] = reasoning ? maxTokens + 1024 : maxTokens,
+                ["messages"] = new JsonArray(
+                    new JsonObject { ["role"] = "system", ["content"] = system },
+                    new JsonObject { ["role"] = "user", ["content"] = user }),
+            };
 
-        using var response = await _http.SendAsync(request, ct);
-        var json = await response.Content.ReadAsStringAsync(ct);
+            // Translation needs no deliberation, and every token of it is latency.
+            if (reasoning)
+                body["reasoning_effort"] = "low";
 
-        if (!response.IsSuccessStatusCode)
-        {
-            Log.Debug("{Provider} returned {Status}: {Body}", Id, (int)response.StatusCode, Truncate(json));
-            return null;
+            using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint)
+            {
+                Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _http.SendAsync(request, ct);
+            }
+            catch (HttpRequestException ex)
+            {
+                throw new ProviderUnavailableException($"{Id} unreachable: {ex.Message}");
+            }
+            catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new ProviderUnavailableException($"{Id} timed out");
+            }
+
+            using var _ = response;
+            var json = await response.Content.ReadAsStringAsync(ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var status = (int)response.StatusCode;
+
+                // The model was retired: find out what is served now and try once more.
+                if (attempt == 0 && (status == 404 || json.Contains("model_not_found") || json.Contains("model_decommissioned")))
+                {
+                    Log.Warning("{Provider} no longer serves {Model}; looking for another", Id, model);
+                    lock (ResolvedModels) ResolvedModels.Remove(Id);
+                    continue;
+                }
+
+                Log.Warning("{Provider} returned {Status}: {Body}", Id, status, Truncate(json));
+                if (status == 429 || status >= 500)
+                    throw new ProviderUnavailableException($"{Id} returned {status}", rateLimited: status == 429);
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
+                return null;
+
+            var text = choices[0].TryGetProperty("message", out var message) &&
+                       message.TryGetProperty("content", out var content)
+                ? content.GetString()
+                : null;
+
+            return StripThinking(text);
         }
 
-        using var doc = JsonDocument.Parse(json);
-        if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
-            return null;
+        return null;
+    }
 
-        return choices[0].TryGetProperty("message", out var message) &&
-               message.TryGetProperty("content", out var text)
-            ? text.GetString()
-            : null;
+    /// <summary>Some reasoning models put their deliberation inline in &lt;think&gt; tags rather
+    /// than in a separate field; none of it belongs in a translation.</summary>
+    private static string? StripThinking(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        var end = text.LastIndexOf("</think>", StringComparison.OrdinalIgnoreCase);
+        return end >= 0 ? text[(end + "</think>".Length)..].Trim() : text;
     }
 
     /// <summary>Removes a leading "Word:" / "Translation:" style label. The prompt asks for bare

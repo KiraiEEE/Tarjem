@@ -193,16 +193,29 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Row="0" Margin="0,0,0,18">
-                        <TextBlock Text="History"
-                                   FontSize="24"
-                                   FontWeight="SemiBold"
-                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
-                        <TextBlock Text="Everything you've looked up with Tarjem"
-                                   FontSize="12"
-                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                   Margin="0,2,0,0"/>
-                    </StackPanel>
+                    <Grid Grid.Row="0" Margin="0,0,0,18">
+                        <StackPanel>
+                            <TextBlock Text="History"
+                                       FontSize="24"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                            <TextBlock Text="Everything you've looked up with Tarjem"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       Margin="0,2,0,0"/>
+                        </StackPanel>
+
+                        <!-- Spaced-repetition review of these words. Labelled with how many are
+                             due, so it reads as "you have 12 words to practise", not a feature. -->
+                        <ui:Button x:Name="ReviewButton"
+                                   Appearance="Primary"
+                                   Icon="{ui:SymbolIcon HatGraduation24}"
+                                   Content="Review"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   ToolTip="Practise the words you've looked up - spaced repetition, like Anki"
+                                   Click="ReviewButton_Click"/>
+                    </Grid>
 
                     <Grid Grid.Row="1" Margin="0,0,0,14">
                         <Grid.ColumnDefinitions>
@@ -1323,6 +1336,21 @@
                                             </StackPanel>
                                         </ui:CardControl.Header>
                                         <ui:ToggleSwitch x:Name="ShowTranslationSectionToggle" Checked="PopupSectionToggle_Changed" Unchecked="PopupSectionToggle_Changed"/>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="Sparkle24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Rewrite the sentence with AI" FontWeight="Medium"/>
+                                                <TextBlock Text="The popup appears with the quick translation, then the sentence is replaced with a natural one from an AI source a moment later. Only when an AI source has a key; uses one request per lookup."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ui:ToggleSwitch x:Name="RefineWithAiToggle"/>
                                     </ui:CardControl>
 
                                     <ui:CardControl Margin="0,0,0,8">

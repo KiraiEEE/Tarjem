@@ -97,7 +97,7 @@ public class SettingsService
             {
                 var json = File.ReadAllText(SettingsPath);
                 var settings = JsonSerializer.Deserialize<AppSettings>(json);
-                if (settings != null) return settings;
+                if (settings != null) return settings.Sanitized();
             }
         }
         catch (Exception ex)

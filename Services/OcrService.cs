@@ -3,6 +3,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
 using Serilog;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -19,6 +20,25 @@ namespace Tarjem.Services;
 public class OcrService
 {
     private readonly Dictionary<string, OcrEngine> _engines = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>One recognition at a time per engine. A quick second press - or live mode ticking
+    /// while Alt+Q runs - used to call the same WinRT engine from two tasks at once, which it is
+    /// not documented to support.</summary>
+    private readonly Dictionary<OcrEngine, SemaphoreSlim> _engineLocks = new();
+
+    private async Task<OcrResult> RecognizeLockedAsync(OcrEngine engine, SoftwareBitmap bitmap)
+    {
+        SemaphoreSlim gate;
+        lock (_engineLocks)
+        {
+            if (!_engineLocks.TryGetValue(engine, out gate!))
+                _engineLocks[engine] = gate = new SemaphoreSlim(1, 1);
+        }
+
+        await gate.WaitAsync().ConfigureAwait(false);
+        try { return await engine.RecognizeAsync(bitmap); }
+        finally { gate.Release(); }
+    }
 
     /// <summary>Factor <see cref="PreprocessForOcr"/> upscales by before recognition, by default.
     /// Every coordinate the engine reports is in that larger space and has to be divided back out.</summary>
@@ -226,7 +246,7 @@ public class OcrService
 
         var scale = EffectiveScale(bitmap, upscale);
         using var softwareBitmap = await PrepareSoftwareBitmapAsync(bitmap, scale);
-        return (Convert(await engine.RecognizeAsync(softwareBitmap), scale), usedTag);
+        return (Convert(await RecognizeLockedAsync(engine, softwareBitmap), scale), usedTag);
     }
 
     /// <summary>
@@ -293,7 +313,7 @@ public class OcrService
             .ToList();
 
         var firstPass = await Task.WhenAll(groups.Select(async g =>
-            (g.Members, g.Representative, Result: await GetOrCreateEngine(g.Representative)!.RecognizeAsync(softwareBitmap))));
+            (g.Members, g.Representative, Result: await RecognizeLockedAsync(GetOrCreateEngine(g.Representative)!, softwareBitmap))));
         ct.ThrowIfCancellationRequested();
 
         var best = firstPass
@@ -309,7 +329,7 @@ public class OcrService
             var guess = LanguageGuesser.GuessWithinScript(result.Text, best.Members, best.Representative);
             if (guess != best.Representative && GetOrCreateEngine(guess) is { } engine)
             {
-                result = await engine.RecognizeAsync(softwareBitmap);
+                result = await RecognizeLockedAsync(engine, softwareBitmap);
                 languageTag = guess;
                 ct.ThrowIfCancellationRequested();
             }
@@ -339,43 +359,71 @@ public class OcrService
 
     private static async Task<SoftwareBitmap> PrepareSoftwareBitmapAsync(Bitmap bitmap, double upscale)
     {
-        // The preprocessing below is a 2x upscale plus three full-frame passes over ~1.2M pixels,
-        // one of them a 3x3 convolution in managed code. It used to run synchronously on whatever
-        // thread called in - which, because the callers reach here from an awaited continuation on
-        // the dispatcher, was the UI thread, freezing the app for the duration of every lookup.
-        var encoded = await Task.Run(() =>
-        {
-            using var processed = PreprocessForOcr(bitmap, upscale);
-            using var buffer = new MemoryStream();
-            processed.Save(buffer, ImageFormat.Bmp);
-            return buffer.ToArray();
-        });
-
-        using var stream = new MemoryStream(encoded);
-        var randomAccessStream = stream.AsRandomAccessStream();
-        var decoder = await BitmapDecoder.CreateAsync(randomAccessStream);
-        return await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+        // Off the UI thread: the callers reach here from an awaited continuation on the dispatcher.
+        var (pixels, width, height) = await Task.Run(() => PreprocessForOcr(bitmap, upscale));
+        return SoftwareBitmap.CreateCopyFromBuffer(pixels.AsBuffer(), BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Premultiplied);
     }
 
-    private static Bitmap PreprocessForOcr(Bitmap source, double upscale)
+    /// <summary>
+    /// Upscale, then grayscale + a modest contrast boost + a light sharpen, in one pass over a
+    /// single channel, written straight into the buffer the OCR engine reads.
+    ///
+    /// Screen text is already crisp and high-contrast (unlike photographed documents), so there is
+    /// no hard binarization: on anything but a plain background it flattens anti-aliased glyphs
+    /// into blobs. This used to be three separate full-colour passes producing three intermediate
+    /// bitmaps, then a BMP encode and decode only to hand the pixels to WinRT - most of the time
+    /// Alt+Q spent before the engine even started. The output is the same image.
+    /// </summary>
+    private static (byte[] Pixels, int Width, int Height) PreprocessForOcr(Bitmap source, double upscale)
     {
-        // Screen text is already crisp and high-contrast (unlike photographed
-        // documents), so we avoid hard global-threshold binarization here: on
-        // anything but a plain background it flattens anti-aliased glyphs into
-        // blobs and is a major source of OCR misreads. A modest contrast boost
-        // plus a light sharpen is enough for the Windows OCR engine to work well
-        // while staying accurate across dark/light/colorful UI backgrounds.
-        var scaled = ScaleBitmap(source, upscale);
-        var grayscale = ToGrayscale(scaled);
-        scaled.Dispose();
+        using var scaled = ScaleBitmap(source, upscale);
+        var w = scaled.Width;
+        var h = scaled.Height;
 
-        var contrast = AdjustContrast(grayscale, 1.2f);
-        grayscale.Dispose();
+        var data = scaled.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var stride = Math.Abs(data.Stride);
+        var src = new byte[stride * h];
+        Marshal.Copy(data.Scan0, src, 0, src.Length);
+        scaled.UnlockBits(data);
 
-        var sharpened = Sharpen(contrast);
-        contrast.Dispose();
+        // Luma with the contrast boost folded in, one byte per pixel.
+        const float Contrast = 1.2f;
+        const float Intercept = 128f * (1f - Contrast);
+        var gray = new byte[w * h];
+        for (var y = 0; y < h; y++)
+        {
+            var row = y * stride;
+            var o = y * w;
+            for (var x = 0; x < w; x++)
+            {
+                var i = row + x * 4;
+                var luma = src[i] * 0.11f + src[i + 1] * 0.59f + src[i + 2] * 0.3f;
+                var v = luma * Contrast + Intercept;
+                gray[o + x] = (byte)(v < 0 ? 0 : v > 255 ? 255 : v);
+            }
+        }
 
-        return sharpened;
+        // 3x3 sharpen (centre 5, edge neighbours -1) on the single channel, expanded to BGRA.
+        var dst = new byte[w * h * 4];
+        for (var y = 0; y < h; y++)
+        {
+            var o = y * w;
+            for (var x = 0; x < w; x++)
+            {
+                int v = gray[o + x];
+                if (y > 0 && y < h - 1 && x > 0 && x < w - 1)
+                {
+                    v = 5 * v - gray[o + x - 1] - gray[o + x + 1] - gray[o - w + x] - gray[o + w + x];
+                    v = v < 0 ? 0 : v > 255 ? 255 : v;
+                }
+
+                var d = (o + x) * 4;
+                dst[d] = dst[d + 1] = dst[d + 2] = (byte)v;
+                dst[d + 3] = 255;
+            }
+        }
+
+        return (dst, w, h);
     }
 
     private static Bitmap ScaleBitmap(Bitmap source, double scale)
@@ -386,101 +434,8 @@ public class OcrService
             PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(scaled);
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         g.DrawImage(source, 0, 0, scaled.Width, scaled.Height);
         return scaled;
-    }
-
-    private static Bitmap ToGrayscale(Bitmap source)
-    {
-        var result = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
-        var data = source.LockBits(new Rectangle(0, 0, source.Width, source.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var destData = result.LockBits(new Rectangle(0, 0, result.Width, result.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-
-        int bytes = Math.Abs(data.Stride) * data.Height;
-        var pixels = new byte[bytes];
-        var destPixels = new byte[bytes];
-        Marshal.Copy(data.Scan0, pixels, 0, bytes);
-
-        for (int i = 0; i < bytes; i += 4)
-        {
-            byte gray = (byte)(pixels[i] * 0.11 + pixels[i + 1] * 0.59 + pixels[i + 2] * 0.3);
-            destPixels[i] = gray;
-            destPixels[i + 1] = gray;
-            destPixels[i + 2] = gray;
-            destPixels[i + 3] = 255;
-        }
-
-        Marshal.Copy(destPixels, 0, destData.Scan0, bytes);
-        source.UnlockBits(data);
-        result.UnlockBits(destData);
-        return result;
-    }
-
-    private static Bitmap AdjustContrast(Bitmap source, float factor)
-    {
-        var result = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
-        var data = source.LockBits(new Rectangle(0, 0, source.Width, source.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var destData = result.LockBits(new Rectangle(0, 0, result.Width, result.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-
-        int bytes = Math.Abs(data.Stride) * data.Height;
-        var pixels = new byte[bytes];
-        var destPixels = new byte[bytes];
-        Marshal.Copy(data.Scan0, pixels, 0, bytes);
-
-        float intercept = 128f * (1f - factor);
-        for (int i = 0; i < bytes; i += 4)
-        {
-            for (int c = 0; c < 3; c++)
-            {
-                float val = pixels[i + c] * factor + intercept;
-                destPixels[i + c] = (byte)Math.Clamp(val, 0, 255);
-            }
-            destPixels[i + 3] = 255;
-        }
-
-        Marshal.Copy(destPixels, 0, destData.Scan0, bytes);
-        source.UnlockBits(data);
-        result.UnlockBits(destData);
-        return result;
-    }
-
-    private static Bitmap Sharpen(Bitmap source)
-    {
-        var result = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
-        var data = source.LockBits(new Rectangle(0, 0, source.Width, source.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        var destData = result.LockBits(new Rectangle(0, 0, result.Width, result.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-
-        int w = source.Width, h = source.Height;
-        int stride = Math.Abs(data.Stride);
-        var pixels = new byte[stride * h];
-        var destPixels = new byte[stride * h];
-        Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
-
-        float[] kernel = { 0, -1, 0, -1, 5, -1, 0, -1, 0 };
-
-        for (int y = 1; y < h - 1; y++)
-        {
-            for (int x = 1; x < w - 1; x++)
-            {
-                for (int c = 0; c < 3; c++)
-                {
-                    float sum = 0;
-                    int ki = 0;
-                    for (int ky = -1; ky <= 1; ky++)
-                        for (int kx = -1; kx <= 1; kx++)
-                        {
-                            int idx = (y + ky) * stride + (x + kx) * 4 + c;
-                            sum += pixels[idx] * kernel[ki++];
-                        }
-                    destPixels[y * stride + x * 4 + c] = (byte)Math.Clamp(sum, 0, 255);
-                }
-                destPixels[y * stride + x * 4 + 3] = 255;
-            }
-        }
-
-        Marshal.Copy(destPixels, 0, destData.Scan0, pixels.Length);
-        source.UnlockBits(data);
-        result.UnlockBits(destData);
-        return result;
     }
 }

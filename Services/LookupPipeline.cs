@@ -15,6 +15,10 @@ public enum LookupMode
     Explain,
 }
 
+/// <summary>The lookup needs the network and there isn't one. Raised before any request is
+/// made, so the user hears "offline" at once instead of after every source has timed out.</summary>
+public sealed class OfflineException() : Exception("No network connection");
+
 /// <summary>Everything the UI needs to present one finished lookup.</summary>
 /// <param name="Result">The answer, or null when there was nothing to show.</param>
 /// <param name="WordRectPhysical">Where the word sits on screen, in physical pixels.</param>
@@ -136,16 +140,41 @@ public sealed class LookupPipeline
     /// </summary>
     /// <param name="peek">An already-completed <see cref="PeekWordAsync"/>, so a caller that
     /// showed a loading state doesn't capture and recognize the screen a second time.</param>
-    public async Task<LookupOutcome?> RunAsync(LookupMode mode, Point cursorPosition, CancellationToken ct, WordPeek? peek = null)
+    /// <param name="onEarly">Called with an early result when the translation is in before the
+    /// definition, so the popup can appear without waiting for the slower half.</param>
+    public async Task<LookupOutcome?> RunAsync(LookupMode mode, Point cursorPosition, CancellationToken ct, WordPeek? peek = null,
+        Action<LookupOutcome>? onEarly = null)
     {
+        var started = System.Diagnostics.Stopwatch.StartNew();
         peek ??= await PeekWordAsync(cursorPosition, ct);
-        if (peek is not { Found: true }) return null;
+        var readMs = started.ElapsedMilliseconds;
+
+        if (peek is not { Found: true })
+        {
+            Log.Information("{Mode}: nothing under the cursor ({Ms} ms)", mode, readMs);
+            return null;
+        }
+
+        if (!System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+        {
+            Log.Information("{Mode}: offline", mode);
+            throw new OfflineException();
+        }
+
+        Action<TranslationResult>? early = onEarly == null ? null : r => onEarly(new LookupOutcome(r, peek.WordRectPhysical));
 
         var result = mode == LookupMode.Explain
             ? await ExplainAsync(peek, ct)
-            : await TranslateAsync(peek.Match, peek.LanguageTag, peek.SourceIsGuess, ct);
+            : await TranslateAsync(peek.Match, peek.LanguageTag, peek.SourceIsGuess, ct, early);
 
         ct.ThrowIfCancellationRequested();
+
+        // Stages, timings and sources - never the word or the sentence, which stay on the machine.
+        Log.Information("{Mode}: read in {ReadMs} ms ({Language}), answered in {TotalMs} ms (translation {Translation}, definition {Definition}{Unavailable})",
+            mode, readMs, peek.LanguageTag, started.ElapsedMilliseconds,
+            string.IsNullOrEmpty(result?.TranslationProvider) ? "none" : result!.TranslationProvider,
+            string.IsNullOrEmpty(result?.DefinitionProvider) ? "none" : result!.DefinitionProvider,
+            result?.TranslationUnavailable == true ? ", no translation source answered" : "");
 
         // Encyclopedia answers aren't vocabulary, so they stay out of history for the same
         // reason region translations do.
@@ -197,7 +226,8 @@ public sealed class LookupPipeline
             sourceIsGuess: guess);
         ct.ThrowIfCancellationRequested();
 
-        _history.CacheResult(scope + result.OriginalWord, result);
+        if (!result.TranslationUnavailable)
+            _history.CacheResult(scope + result.OriginalWord, result);
 
         // A new target language is a new vocabulary entry; the same target with a corrected source
         // is the same entry, and counting it as a second lookup would inflate "most looked up".
@@ -231,7 +261,8 @@ public sealed class LookupPipeline
     /// <summary>The Alt+Q path, with the in-memory cache in front of it. That cache is a speed
     /// optimization rather than a record, so it stays on even with history off - "history off"
     /// means nothing is written to disk.</summary>
-    private async Task<TranslationResult?> TranslateAsync(WordMatch match, string languageTag, bool sourceIsGuess, CancellationToken ct)
+    private async Task<TranslationResult?> TranslateAsync(WordMatch match, string languageTag, bool sourceIsGuess, CancellationToken ct,
+        Action<TranslationResult>? early = null)
     {
         // Both spellings, because which one the lookup will settle on isn't known until it runs -
         // and the cache is keyed on the answer, not on the guess.
@@ -243,13 +274,32 @@ public sealed class LookupPipeline
         if (_history.GetCached(scope + match.Target) is { } cached)
             return cached;
 
-        var result = await _translation.TranslateWord(match.Target, match.Context, languageTag, ct, match.Raw, sourceIsGuess);
+        var result = await _translation.TranslateWord(match.Target, match.Context, languageTag, ct, match.Raw, sourceIsGuess, early);
 
         // Keyed on the word actually answered about. Keying it on the correction meant a confirmed
         // reading of "governorate" was filed under "governor", and the next hover on "governor"
         // got the wrong entry back out of the cache.
-        _history.CacheResult(scope + result.OriginalWord, result);
+        //
+        // Not when the translation failed: that answer is about the connection, not the word, and
+        // caching it served the failure again for the rest of the session.
+        if (!result.TranslationUnavailable)
+            _history.CacheResult(scope + result.OriginalWord, result);
         return result;
+    }
+
+    /// <summary>Asks an AI source for a natural translation of an answer already on screen, and
+    /// keeps the better one in the cache. Null when there is nothing to improve.</summary>
+    public async Task<TranslationResult?> RefineAsync(TranslationResult shown, CancellationToken ct)
+    {
+        var refined = await _translation.RefineWithAiAsync(shown, ct);
+        if (refined == null) return null;
+
+        _history.CacheResult(CacheScope(shown.FullSentence, shown.SourceLanguage) + refined.OriginalWord, refined);
+        if (_settings.Current.HistoryEnabled)
+            _history.Add(refined);
+
+        Log.Information("Alt+Q: translation refined by {Provider}", refined.TranslationProvider);
+        return refined;
     }
 
     /// <summary>

@@ -236,6 +236,7 @@ public partial class ExplainWindow : Window
         base.OnSourceInitialized(e);
         var hwnd = new WindowInteropHelper(this).Handle;
         SetWindowLong(hwnd, GWL_EXSTYLE, GetWindowLong(hwnd, GWL_EXSTYLE) | WS_EX_NOACTIVATE);
+        ScreenCaptureGuard.ExcludeFromCapture(hwnd);
     }
 
     private void ApplyTheme()

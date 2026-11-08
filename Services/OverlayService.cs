@@ -122,6 +122,29 @@ public class OverlayService
         popup.AnimateIn();
     }
 
+    /// <summary>
+    /// Replaces the answer in the popup already on screen - the definition arriving after the
+    /// early half, or the AI's rewrite of the sentence - without closing and reopening it. Returns
+    /// false when there is no popup any more (it was dismissed), so the caller can drop the update.
+    /// </summary>
+    public bool UpdateTranslationPopup(WpfRect wordRectPhysical, TranslationResult result)
+    {
+        var popup = _popup;
+        if (popup == null) return false;
+
+        WireSourceSwitchers(popup, result);
+        popup.UpdateResult(result,
+            string.IsNullOrEmpty(result.DefinitionProvider) ? Settings.DefaultDictionaryProvider : result.DefinitionProvider,
+            string.IsNullOrEmpty(result.TranslationProvider) ? Settings.DefaultTranslationProvider : result.TranslationProvider);
+        popup.UpdateLayout();
+        PositionPopup(popup, wordRectPhysical);
+        popup.RefreshBackdrop();
+
+        if (Settings.ShowWordOverlayOnHighlight && _overlay != null && !string.IsNullOrWhiteSpace(result.ArabicWord))
+            _overlay.ShowWordOverlay(result.ArabicWord, wordRectPhysical, TranslationService.IsRtlLanguage(result.TargetLanguage));
+        return true;
+    }
+
     /// <summary>The popup's own source switchers re-ask about the result on show - which after a
     /// language change is the new one, so they are re-pointed every time it changes.</summary>
     private void WireSourceSwitchers(PopupWindow popup, TranslationResult result)

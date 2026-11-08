@@ -20,7 +20,7 @@ namespace Tarjem.Services;
 /// </summary>
 public class TranslationService
 {
-    private readonly HttpClient _httpClient;
+    private HttpClient _httpClient;
     private readonly SettingsService _settingsService;
 
     private readonly Lazy<GeminiService> _gemini;
@@ -97,11 +97,70 @@ public class TranslationService
     {
         _settingsService = settingsService;
 
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-        _httpClient.DefaultRequestHeaders.Add("User-Agent", $"Tarjem/{UpdateService.CurrentVersion}");
+        _httpClient = CreateHttpClient();
 
         _gemini = new Lazy<GeminiService>(() => new GeminiService(settingsService.Current, settingsService.Save, ResolveKey("gemini")));
         _encyclopedia = new Lazy<EncyclopediaService>(() => new EncyclopediaService());
+    }
+
+    /// <summary>
+    /// Connections are kept for a reading session rather than the default minute or two: a fresh
+    /// TLS handshake to Google is a few hundred milliseconds on every press that comes after a
+    /// pause, which is most of them.
+    ///
+    /// The cost of that, found by measuring: Google rate-limits per front-end server, and a pooled
+    /// connection stays pinned to whichever one it reached. When that server starts answering 429
+    /// the whole session kept getting 429 while a brand-new connection got 200 at once - see
+    /// <see cref="RecycleConnections"/>, which is how that is undone.
+    /// </summary>
+    private static HttpClient CreateHttpClient()
+    {
+        var client = new HttpClient(new SocketsHttpHandler
+        {
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(15),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+        })
+        { Timeout = TimeSpan.FromSeconds(8) };
+        client.DefaultRequestHeaders.Add("User-Agent", $"Tarjem/{UpdateService.CurrentVersion}");
+        return client;
+    }
+
+    private readonly object _clientGate = new();
+    private DateTime _lastRecycle;
+
+    /// <summary>Drops every pooled connection so the next request connects afresh - and, for
+    /// Google, lands on a server that isn't rate-limiting this one. The old client is disposed a
+    /// little later rather than at once, so requests already in flight on it can finish.</summary>
+    private bool RecycleConnections()
+    {
+        lock (_clientGate)
+        {
+            // Two parallel requests both seeing the 429 should recycle once, not twice.
+            if (DateTime.UtcNow - _lastRecycle < TimeSpan.FromSeconds(2)) return true;
+            _lastRecycle = DateTime.UtcNow;
+
+            var old = _httpClient;
+            _httpClient = CreateHttpClient();
+            _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => old.Dispose(), TaskScheduler.Default);
+            Log.Information("Reconnecting to the translation services after a rate limit");
+            return true;
+        }
+    }
+
+    /// <summary>Opens the connection to the default translation source ahead of the first lookup,
+    /// so the first press of the session is as quick as the rest. Best-effort and silent.</summary>
+    public async Task WarmUpAsync()
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Head, "https://translate.googleapis.com/");
+            using var _ = await _httpClient.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Connection warm-up failed");
+        }
     }
 
     // ===================== Keys =====================
@@ -202,26 +261,63 @@ public class TranslationService
     private static TimeSpan AttemptBudget(string providerId, bool block) =>
         IsAiProvider(providerId) ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds(block ? 8 : 5);
 
-    /// <summary>Runs one provider attempt under its budget. A budget that runs out surfaces as a
-    /// plain failure (null), so the chain moves on; the caller's own cancellation still throws.</summary>
-    private static async Task<T?> WithinBudgetAsync<T>(
-        string providerId, bool block, Func<CancellationToken, Task<T?>> attempt, CancellationToken ct) where T : class
-    {
-        var budget = AttemptBudget(providerId, block);
-        if (budget == Timeout.InfiniteTimeSpan) return await attempt(ct);
+    /// <summary>Which sources are failing right now. Shared by every lookup so a source that just
+    /// timed out for Alt+Q is not tried first again by the next Alt+W.</summary>
+    public ProviderHealthTracker Health { get; } = new();
 
+    /// <summary>
+    /// Runs one provider attempt under its budget and records how it went. A budget that runs out,
+    /// or a source that refuses (429, 5xx, unreachable), surfaces as a plain failure (null) so the
+    /// chain moves on - and counts against the source's health, so the next lookup doesn't wait on
+    /// it again. A null answer on its own ("no entry for that word") is not held against anyone.
+    /// The caller's own cancellation still throws.
+    /// </summary>
+    private async Task<T?> WithinBudgetAsync<T>(
+        string providerId, bool block, Func<CancellationToken, Task<T?>> attempt, CancellationToken ct,
+        AttemptLog? log = null) where T : class
+    {
+        if (log != null) log.Tried++;
+
+        var budget = AttemptBudget(providerId, block);
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        bounded.CancelAfter(budget);
+        if (budget != Timeout.InfiniteTimeSpan)
+            bounded.CancelAfter(budget);
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            return await attempt(bounded.Token);
+            var result = await attempt(bounded.Token);
+            if (result != null) Health.RecordSuccess(providerId);
+            return result;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            Log.Debug("{Provider} ran out of its {Budget}s budget; moving on", providerId, budget.TotalSeconds);
+            Log.Information("{Provider} gave no answer within {Budget:0}s; moving on", providerId, started.Elapsed.TotalSeconds);
+            Health.RecordFailure(providerId);
+            if (log != null) log.Failed++;
+            return null;
+        }
+        catch (ProviderUnavailableException ex)
+        {
+            Log.Information("{Provider} unavailable: {Reason}", providerId, ex.Message);
+            Health.RecordFailure(providerId, ex.RateLimited);
+            if (log != null) log.Failed++;
             return null;
         }
     }
+
+    /// <summary>How a failover walk went: how many sources were asked and how many of those
+    /// failed outright (rather than answering "no"). All of them failing is what "unavailable"
+    /// means - a name every source echoes back untranslated is not that.</summary>
+    private sealed class AttemptLog
+    {
+        public int Tried;
+        public int Failed;
+    }
+
+    /// <summary>A failover chain with sources that are currently failing moved to the back.</summary>
+    private IReadOnlyList<ProviderDescriptor> Healthy(IReadOnlyList<ProviderDescriptor> chain) =>
+        Health.Order(chain, p => p.Id);
 
     // ===================== The word lookup (Alt+Q) =====================
 
@@ -238,9 +334,12 @@ public class TranslationService
     /// own guess (auto-detect) rather than the user's statement. Sources that can detect the
     /// language themselves are then asked to, and when one reports a different language than the
     /// guess, the answer is relabelled and the definition fetched again in the right language.</param>
+    /// <param name="onTranslationReady">Called with an early result as soon as the translation is
+    /// in, when the definition is still on its way - so the popup can appear at the speed of the
+    /// fastest source instead of the slowest. Not called when both arrive together.</param>
     public async Task<TranslationResult> TranslateWord(
         string word, string fullSentence, string sourceLanguageCode, CancellationToken ct = default, string? asRead = null,
-        bool sourceIsGuess = false)
+        bool sourceIsGuess = false, Action<TranslationResult>? onTranslationReady = null)
     {
         var settings = _settingsService.Current;
         var (sourceLangCode, sourceLangName) = GetSourceLanguage(sourceLanguageCode);
@@ -279,6 +378,7 @@ public class TranslationService
         // wrong. Google is asked alone in that case - it detects the language itself and answers in
         // one cheap request - rather than walking every source to hear the word echoed back.
         var wantsTranslation = settings.ShowTranslationSection || settings.ShowInlineWordTranslation;
+        var attempts = new AttemptLog();
         var sameLanguage = SameLanguage(sourceLangCode, targetLangCode);
 
         var translationTask = !wantsTranslation || (sameLanguage && !sourceIsGuess)
@@ -288,7 +388,19 @@ public class TranslationService
                 : TranslateWordWithFailoverAsync(settings.DefaultTranslationProvider, word, sentence,
                     sourceIsGuess ? LanguageCatalog.Auto : sourceLangCode,
                     sourceIsGuess ? UnknownSourceName : sourceLangName,
-                    sourceLangCode, targetLangCode, targetLangName, ct);
+                    sourceLangCode, targetLangCode, targetLangName, ct, attempts);
+
+        if (onTranslationReady != null && wantsTranslation && settings.ShowDictionarySection)
+        {
+            await Task.WhenAny(dictionaryTask, translationTask);
+            if (translationTask.IsCompletedSuccessfully && !dictionaryTask.IsCompleted && await translationTask is { } early)
+            {
+                var partial = result.Clone();
+                ApplyTranslation(partial, early);
+                partial.DefinitionPending = true;
+                onTranslationReady(partial);
+            }
+        }
 
         await Task.WhenAll(dictionaryTask, translationTask);
 
@@ -328,15 +440,9 @@ public class TranslationService
         }
 
         if (translation != null)
-        {
-            result.ArabicWord = translation.Word;
-            result.ArabicTranslation = translation.Word;
-            result.TranslatedSentence = translation.Sentence;
-            result.TranslatedSentenceHighlightStart = translation.HighlightStart;
-            result.TranslatedSentenceHighlightLength = translation.HighlightLength;
-            result.TranslationProvider = translation.ProviderId;
-            result.IsTranslationFromGemini = translation.ProviderId == "gemini";
-        }
+            ApplyTranslation(result, translation);
+        else if (attempts.Tried > 0 && attempts.Failed == attempts.Tried)
+            result.TranslationUnavailable = true;
 
         // The dictionary chain may have produced a translation too (Gemini answers both in one
         // request). Use it only where the translation chain came up empty, so an explicitly
@@ -352,8 +458,58 @@ public class TranslationService
         if (result.Meanings.Length == 0 && settings.ShowDictionarySection)
             result.Meanings = ["No definition found"];
 
+        if (!string.IsNullOrEmpty(result.ArabicWord))
+            result.TranslationUnavailable = false;
+
         result.IsFromGemini = result.IsDefinitionFromGemini || result.IsTranslationFromGemini;
         return result;
+    }
+
+    private static void ApplyTranslation(TranslationResult result, TranslationOutcome translation)
+    {
+        result.ArabicWord = translation.Word;
+        result.ArabicTranslation = translation.Word;
+        result.TranslatedSentence = translation.Sentence;
+        result.TranslatedSentenceHighlightStart = translation.HighlightStart;
+        result.TranslatedSentenceHighlightLength = translation.HighlightLength;
+        result.TranslationProvider = translation.ProviderId;
+        result.IsTranslationFromGemini = translation.ProviderId == "gemini";
+    }
+
+    /// <summary>
+    /// The second half of "fast and good": the popup has already shown the quick keyless answer;
+    /// this asks the best available AI source for the natural one, to swap in when it arrives.
+    /// Null when there is nothing to improve on (no AI source with a key, the answer already came
+    /// from one, no sentence) or the AI source didn't answer - in which case the quick answer
+    /// simply stays, which is no worse than before.
+    /// </summary>
+    public async Task<TranslationResult?> RefineWithAiAsync(TranslationResult result, CancellationToken ct)
+    {
+        if (!_settingsService.Current.RefineTranslationsWithAi) return null;
+        if (IsAiProvider(result.TranslationProvider) || result.TranslationUnavailable) return null;
+        if (string.IsNullOrWhiteSpace(result.FullSentence) || string.IsNullOrWhiteSpace(result.ArabicWord)) return null;
+        if (SameLanguage(result.SourceLanguage, result.TargetLanguage)) return null;
+
+        var (targetCode, targetName) = GetTargetLanguage();
+        if (!SameLanguage(targetCode, result.TargetLanguage)) return null;
+
+        var ai = Healthy(ProviderCatalog.Usable(ProviderKind.Translation, targetCode, HasKey)
+                .Where(p => IsAiProvider(p.Id)).ToList())
+            .FirstOrDefault(p => Health.IsHealthy(p.Id));
+        if (ai == null) return null;
+
+        var (sourceCode, sourceName) = GetSourceLanguage(result.SourceLanguage);
+        var outcome = await WithinBudgetAsync(ai.Id, block: false,
+            t => TranslateWordWithOneAsync(ai.Id, result.OriginalWord, result.FullSentence, sourceCode, sourceName,
+                sourceCode, targetCode, targetName, t), ct);
+
+        if (outcome == null || string.IsNullOrWhiteSpace(outcome.Sentence)) return null;
+
+        var refined = result.Clone();
+        ApplyTranslation(refined, outcome);
+        refined.IsRefined = true;
+        refined.IsFromGemini = refined.IsDefinitionFromGemini || refined.IsTranslationFromGemini;
+        return refined;
     }
 
     /// <summary>
@@ -551,7 +707,7 @@ public class TranslationService
         bool mayReachUnchosenAiSources, CancellationToken ct)
     {
         IEnumerable<ProviderDescriptor> chain =
-            ProviderCatalog.FailoverChain(ProviderKind.Encyclopedia, preferredId, sourceCode, HasKey);
+            Healthy(ProviderCatalog.FailoverChain(ProviderKind.Encyclopedia, preferredId, sourceCode, HasKey));
 
         if (!mayReachUnchosenAiSources)
             chain = chain.Where(p => !p.RequiresKey || p.Id == preferredId);
@@ -638,7 +794,7 @@ public class TranslationService
         string preferredId, string word, string sourceCode, string sourceName,
         string targetCode, string targetName, string fullSentence, CancellationToken ct)
     {
-        var chain = ProviderCatalog.FailoverChain(ProviderKind.Dictionary, preferredId, sourceCode, HasKey);
+        var chain = Healthy(ProviderCatalog.FailoverChain(ProviderKind.Dictionary, preferredId, sourceCode, HasKey));
 
         foreach (var provider in chain)
         {
@@ -1060,9 +1216,9 @@ public class TranslationService
     /// themselves. Equal to <paramref name="sourceCode"/> unless that is "auto".</param>
     private async Task<TranslationOutcome?> TranslateWordWithFailoverAsync(
         string preferredId, string word, string sentence, string sourceCode, string sourceName,
-        string guessCode, string targetCode, string targetName, CancellationToken ct)
+        string guessCode, string targetCode, string targetName, CancellationToken ct, AttemptLog? log = null)
     {
-        var chain = ProviderCatalog.FailoverChain(ProviderKind.Translation, preferredId, targetCode, HasKey);
+        var chain = Healthy(ProviderCatalog.FailoverChain(ProviderKind.Translation, preferredId, targetCode, HasKey));
 
         foreach (var provider in chain)
         {
@@ -1070,7 +1226,7 @@ public class TranslationService
             try
             {
                 var outcome = await WithinBudgetAsync(provider.Id, block: false,
-                    t => TranslateWordWithOneAsync(provider.Id, word, sentence, sourceCode, sourceName, guessCode, targetCode, targetName, t), ct);
+                    t => TranslateWordWithOneAsync(provider.Id, word, sentence, sourceCode, sourceName, guessCode, targetCode, targetName, t), ct, log);
                 if (outcome != null)
                 {
                     if (provider.Id != preferredId)
@@ -1116,7 +1272,7 @@ public class TranslationService
                 // The word and its sentence are independent requests, so they go out together
                 // instead of paying for two round trips back to back.
                 var from = providerId == "mymemory" && sourceCode == LanguageCatalog.Auto ? guessCode : sourceCode;
-                var wordTask = TranslateRawAsync(providerId, word, from, targetCode, ct);
+                var wordTask = TranslateRawAsync(providerId, word, from, targetCode, ct, alternatives: true);
                 var sentenceTask = string.IsNullOrEmpty(sentence)
                     ? Task.FromResult(RawTranslation.None)
                     : TranslateRawAsync(providerId, sentence, from, targetCode, ct);
@@ -1129,6 +1285,8 @@ public class TranslationService
                     string.Equals(translatedWord.Trim(), word.Trim(), StringComparison.OrdinalIgnoreCase))
                     return null;
 
+                translatedWord = InContext(translatedWord, (await wordTask).Alternatives, translatedSentence.Text);
+
                 // The sentence is the better witness for which language this is: a lone word like
                 // "Hotel" is half the Latin languages at once.
                 var detected = translatedSentence.Detected ?? (await wordTask).Detected;
@@ -1140,18 +1298,46 @@ public class TranslationService
     }
 
     /// <summary>One keyless request: the translation, and the language the service detected.</summary>
-    private readonly record struct RawTranslation(string? Text, string? Detected)
+    /// <param name="Alternatives">Other translations of a single word, most common first, when
+    /// the service offers them.</param>
+    private readonly record struct RawTranslation(string? Text, string? Detected, string[]? Alternatives = null)
     {
         public static readonly RawTranslation None = new(null, null);
     }
 
-    private Task<RawTranslation> TranslateRawAsync(string providerId, string text, string sourceCode, string targetCode, CancellationToken ct) =>
+    private Task<RawTranslation> TranslateRawAsync(string providerId, string text, string sourceCode, string targetCode,
+        CancellationToken ct, bool alternatives = false) =>
         providerId switch
         {
             "lingva" => LingvaTranslateAsync(text, sourceCode, targetCode, ct),
             "mymemory" => MyMemoryTranslateAsync(text, sourceCode, targetCode, ct),
-            _ => GoogleTranslateAsync(text, sourceCode, targetCode, ct),
+            _ => GoogleTranslateAsync(text, sourceCode, targetCode, ct, alternatives),
         };
+
+    /// <summary>
+    /// The word's translation in the sense its sentence uses. A word translated on its own comes
+    /// back in its most common sense - "bank" as a place for money - while the sentence it came
+    /// from may be about a river. The translated sentence already chose the right sense, so of the
+    /// word's translations, the one that actually appears in it wins; when none does, the
+    /// translator's own first choice stands.
+    /// </summary>
+    public static string InContext(string translatedWord, string[]? alternatives, string? translatedSentence)
+    {
+        if (string.IsNullOrWhiteSpace(translatedSentence) || alternatives is not { Length: > 0 })
+            return translatedWord;
+
+        if (TranslationHighlighter.Locate(translatedSentence, translatedWord).Start >= 0)
+            return translatedWord;
+
+        foreach (var candidate in alternatives)
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) continue;
+            if (TranslationHighlighter.Locate(translatedSentence, candidate).Start >= 0)
+                return candidate;
+        }
+
+        return translatedWord;
+    }
 
     /// <summary>On-demand translation from the popup's source switcher - one named source only,
     /// for the same reason the dictionary switcher doesn't fail over.</summary>
@@ -1220,7 +1406,13 @@ public class TranslationService
                 return cached;
         }
 
-        var chain = ProviderCatalog.FailoverChain(ProviderKind.Translation, preferredId, targetCode, HasKey);
+        // When the user's source is an AI one, its stand-ins are the other AI sources: falling
+        // straight from Gemini to Google turned a natural translation into a literal one the
+        // moment Gemini hiccuped - the very output the AI source was picked to avoid.
+        IReadOnlyList<ProviderDescriptor> chain = ProviderCatalog.FailoverChain(ProviderKind.Translation, preferredId, targetCode, HasKey);
+        if (IsAiProvider(preferredId))
+            chain = chain.OrderBy(p => IsAiProvider(p.Id) ? 0 : 1).ToList();
+        chain = Healthy(chain);
 
         foreach (var provider in chain)
         {
@@ -1262,11 +1454,26 @@ public class TranslationService
         }
     }
 
+    /// <summary>Strips the padding some models put on each line (Markdown's two-space line
+    /// break, a stray trailing space), which otherwise ends up drawn into the overlay.</summary>
+    private static string TidyLines(string text) =>
+        string.Join("\n", text.Replace("\r\n", "\n").Split('\n').Select(l => l.Trim()));
+
     /// <summary>Translates a block of text with one specific provider. Returns null when the
     /// provider produced nothing, so the caller can fall back.</summary>
     public async Task<string?> TranslateTextWithProviderAsync(
-        string providerId, string text, string sourceLanguageCode = "en", CancellationToken ct = default) =>
-        (await TranslateTextWithOneAsync(providerId, text, sourceLanguageCode, sourceIsGuess: false, ct))?.Text;
+        string providerId, string text, string sourceLanguageCode = "en", CancellationToken ct = default)
+    {
+        try
+        {
+            return (await TranslateTextWithOneAsync(providerId, text, sourceLanguageCode, sourceIsGuess: false, ct))?.Text;
+        }
+        catch (ProviderUnavailableException ex)
+        {
+            Health.RecordFailure(providerId, ex.RateLimited);
+            return null;
+        }
+    }
 
     private async Task<BlockTranslation?> TranslateTextWithOneAsync(
         string providerId, string text, string sourceLanguageCode, bool sourceIsGuess, CancellationToken ct)
@@ -1294,9 +1501,10 @@ public class TranslationService
             // that as "nothing useful" so the caller's fallback gets a turn.
             return string.IsNullOrWhiteSpace(translated.Text) || translated.Text == text
                 ? null
-                : new BlockTranslation(translated.Text, providerId, Detected(translated.Detected));
+                : new BlockTranslation(TidyLines(translated.Text), providerId, Detected(translated.Detected));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (ProviderUnavailableException) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Region translation provider {Provider} failed", providerId);
@@ -1314,25 +1522,29 @@ public class TranslationService
     /// easily exceed it once escaped. Longer text is sent as a form POST instead.</summary>
     private const int MaxGetQueryLength = 1800;
 
-    private async Task<RawTranslation> GoogleTranslateAsync(string text, string sourceLang, string targetLang, CancellationToken ct)
+    private async Task<RawTranslation> GoogleTranslateAsync(string text, string sourceLang, string targetLang,
+        CancellationToken ct, bool alternatives = false)
     {
+        // dt=bd adds the dictionary block - every translation of a single word, by part of speech
+        // and most common first - in the same response, so asking costs nothing extra.
+        var baseUrl = $"https://translate.googleapis.com/translate_a/single?client=gtx&sl={GoogleCode(sourceLang)}&tl={GoogleCode(targetLang)}&dt=t" +
+                      (alternatives ? "&dt=bd" : "");
+        var escaped = Uri.EscapeDataString(text);
+
+        HttpRequestMessage Request() => escaped.Length <= MaxGetQueryLength
+            ? new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}&q={escaped}")
+            : new HttpRequestMessage(HttpMethod.Post, baseUrl)
+            {
+                Content = new FormUrlEncodedContent(new[] { new KeyValuePair<string, string>("q", text) }),
+            };
+
+        var json = await SendAsync("google", Request, ct);
+        if (json == null) return RawTranslation.None;
+
         try
         {
-            var baseUrl = $"https://translate.googleapis.com/translate_a/single?client=gtx&sl={GoogleCode(sourceLang)}&tl={GoogleCode(targetLang)}&dt=t";
-            var escaped = Uri.EscapeDataString(text);
-
-            using var request = escaped.Length <= MaxGetQueryLength
-                ? new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}&q={escaped}")
-                : new HttpRequestMessage(HttpMethod.Post, baseUrl)
-                {
-                    Content = new FormUrlEncodedContent(new[] { new KeyValuePair<string, string>("q", text) }),
-                };
-
-            using var response = await _httpClient.SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode) return RawTranslation.None;
-
-            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-            var root = json.RootElement;
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
                 return RawTranslation.None;
 
@@ -1348,18 +1560,72 @@ public class TranslationService
                     parts.Add(part);
             }
 
+            // [1] is the dictionary block when dt=bd was asked for: [[pos, [terms...], ...], ...].
+            string[]? options = null;
+            if (alternatives && root.GetArrayLength() > 1 && root[1].ValueKind == JsonValueKind.Array)
+            {
+                options = root[1].EnumerateArray()
+                    .Where(e => e.ValueKind == JsonValueKind.Array && e.GetArrayLength() > 1 && e[1].ValueKind == JsonValueKind.Array)
+                    .SelectMany(e => e[1].EnumerateArray())
+                    .Where(t => t.ValueKind == JsonValueKind.String)
+                    .Select(t => t.GetString()!)
+                    .Distinct()
+                    .Take(12)
+                    .ToArray();
+            }
+
             // [2] is the source language Google settled on - the detected one when sl=auto.
             var detected = root.GetArrayLength() > 2 && root[2].ValueKind == JsonValueKind.String
                 ? root[2].GetString()
                 : null;
 
-            return parts.Count == 0 ? RawTranslation.None : new RawTranslation(string.Concat(parts), detected);
+            return parts.Count == 0 ? RawTranslation.None : new RawTranslation(string.Concat(parts), detected, options);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex)
+        catch (JsonException ex)
         {
-            Log.Debug(ex, "Google translation failed");
+            Log.Information("Google returned something that isn't a translation ({Error})", ex.Message);
             return RawTranslation.None;
+        }
+    }
+
+    /// <summary>
+    /// Sends one keyless request. A response is returned as text; a source that refuses or can't
+    /// be reached is reported as <see cref="ProviderUnavailableException"/>, which the failover
+    /// counts against its health. Returning null for those, as this used to, made a rate-limited
+    /// Google indistinguishable from "no translation", so it was asked first again on every press.
+    /// </summary>
+    private async Task<string?> SendAsync(string providerId, Func<HttpRequestMessage> request, CancellationToken ct, bool isRetry = false)
+    {
+        HttpResponseMessage response;
+        try
+        {
+            using var message = request();
+            response = await _httpClient.SendAsync(message, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new ProviderUnavailableException($"{providerId} unreachable: {ex.Message}");
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new ProviderUnavailableException($"{providerId} timed out");
+        }
+
+        using (response)
+        {
+            var status = (int)response.StatusCode;
+
+            // A rate limit is usually one front-end server's, pinned by the pooled connection;
+            // a new connection reaches another. One retry, so a real limit still fails over.
+            if (status == 429 && !isRetry && RecycleConnections())
+                return await SendAsync(providerId, request, ct, isRetry: true);
+
+            if (status == 429 || status >= 500)
+                throw new ProviderUnavailableException($"{providerId} returned {status}", rateLimited: status == 429);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            return await response.Content.ReadAsStringAsync(ct);
         }
     }
 
@@ -1369,10 +1635,10 @@ public class TranslationService
         // most screen text that reaches this far down the chain is.
         var from = sourceLang == LanguageCatalog.Auto ? "en" : LanguageCatalog.Find(sourceLang)?.Code ?? sourceLang;
         var url = $"https://api.mymemory.translated.net/get?q={Uri.EscapeDataString(text)}&langpair={from}|{targetLang}";
-        using var response = await _httpClient.GetAsync(url, ct);
-        if (!response.IsSuccessStatusCode) return RawTranslation.None;
+        var body = await SendAsync("mymemory", () => new HttpRequestMessage(HttpMethod.Get, url), ct);
+        if (body == null) return RawTranslation.None;
 
-        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        using var json = JsonDocument.Parse(body);
         return json.RootElement.TryGetProperty("responseData", out var data) &&
                data.TryGetProperty("translatedText", out var textEl) &&
                textEl.ValueKind == JsonValueKind.String
@@ -1401,6 +1667,7 @@ public class TranslationService
 
     private async Task<RawTranslation> LingvaTranslateAsync(string text, string sourceLang, string targetLang, CancellationToken ct)
     {
+        var failures = 0;
         foreach (var instance in LingvaInstances)
         {
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -1425,8 +1692,12 @@ public class TranslationService
             catch (Exception ex)
             {
                 Log.Debug(ex, "Lingva instance {Instance} failed", instance);
+                failures++;
             }
         }
+
+        if (failures == LingvaInstances.Length)
+            throw new ProviderUnavailableException("every Lingva instance failed");
         return RawTranslation.None;
     }
 

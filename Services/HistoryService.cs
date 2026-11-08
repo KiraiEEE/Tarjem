@@ -106,8 +106,57 @@ public class HistoryService
         Save();
     }
 
+    // ── Review ──
+
+    /// <summary>New words a session introduces at most, so a long history doesn't turn the first
+    /// review into a few hundred cards.</summary>
+    public const int NewWordsPerSession = 20;
+
+    /// <summary>Words worth reviewing: ones looked up with an actual translation or definition,
+    /// not encyclopedia lines or failed lookups.</summary>
+    private static bool IsReviewable(HistoryEntry e) =>
+        e.Word.Length > 0 &&
+        (e.ArabicTranslation.Length > 0 || (e.Definition.Length > 0 && e.Definition != "No definition found"));
+
+    /// <summary>The words due now: those already in review whose time has come (most overdue
+    /// first), then new ones (most looked-up first - the words the user keeps forgetting), capped
+    /// at <see cref="NewWordsPerSession"/>.</summary>
+    public List<HistoryEntry> DueForReview(DateTime now)
+    {
+        var reviewable = _entries.Where(IsReviewable).ToList();
+
+        var due = reviewable
+            .Where(e => e.ReviewCount > 0 && e.ReviewDue <= now)
+            .OrderBy(e => e.ReviewDue)
+            .ToList();
+
+        due.AddRange(reviewable
+            .Where(e => e.ReviewCount == 0)
+            .OrderByDescending(e => e.LookupCount)
+            .ThenByDescending(e => e.Timestamp)
+            .Take(NewWordsPerSession));
+
+        return due;
+    }
+
+    public int DueCount(DateTime now) => DueForReview(now).Count;
+
+    /// <summary>Records how a review went and schedules the word's next one.</summary>
+    public void RecordReview(HistoryEntry entry, Tarjem.Core.Learning.ReviewGrade grade, DateTime now)
+    {
+        entry.Review = Tarjem.Core.Learning.ReviewScheduler.Next(entry.Review, grade, now);
+        Save();
+    }
+
     private static void MergeInto(HistoryEntry entry, HistoryEntry previous)
     {
+        // Looking a word up again doesn't reset what review has learned about it.
+        entry.ReviewDue = previous.ReviewDue;
+        entry.ReviewIntervalDays = previous.ReviewIntervalDays;
+        entry.ReviewEase = previous.ReviewEase;
+        entry.ReviewCount = previous.ReviewCount;
+        entry.ReviewLapses = previous.ReviewLapses;
+
         entry.LookupCount = Math.Max(1, previous.LookupCount) + 1;
         entry.FirstLookedUp = previous.FirstLookedUp ?? previous.Timestamp;
 

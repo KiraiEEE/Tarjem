@@ -312,6 +312,10 @@ public partial class PopupWindow : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         var extendedStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
         SetWindowLong(hwnd, GWL_EXSTYLE, extendedStyle | WS_EX_NOACTIVATE);
+
+        // A second Alt+Q while this is up photographs the screen around the cursor; without this
+        // the popup's own text was read back in as part of the sentence.
+        ScreenCaptureGuard.ExcludeFromCapture(hwnd);
     }
 
     public void AnimateIn()
@@ -356,22 +360,100 @@ public partial class PopupWindow : Window
         OriginalWordText.Text = result.OriginalWord;
         SpeakWordBtn.Visibility = PronunciationService.CanSpeak(result.SourceLanguage) ? Visibility.Visible : Visibility.Collapsed;
 
-        GeminiStar1.Visibility = result.IsTranslationFromGemini ? Visibility.Visible : Visibility.Collapsed;
+        ApplyTranslationBadge(result);
         GeminiStar2.Visibility = result.IsDefinitionFromGemini ? Visibility.Visible : Visibility.Collapsed;
 
         ApplySectionVisibility(result);
         ApplyInlineWordTranslation(result);
 
-        ApplyDictionaryFields(
-            result.Meanings.FirstOrDefault() ?? "Definition not found",
-            result.Phonetic, result.PartOfSpeech, result.CefrLevel, result.Synonyms);
+        if (result.DefinitionPending)
+        {
+            ApplyDictionaryFields("Looking up\u2026", "", "", "", []);
+            MeaningText.Foreground = new SolidColorBrush(_mutedColor);
+        }
+        else
+        {
+            ApplyDictionaryFields(
+                result.Meanings.FirstOrDefault() ?? "Definition not found",
+                result.Phonetic, result.PartOfSpeech, result.CefrLevel, result.Synonyms);
+            MeaningText.Foreground = new SolidColorBrush(_secondaryColor);
+            ApplyEncyclopedicFraming(result);
+        }
 
-        ApplyEncyclopedicFraming(result);
-
-        SetArabicText(result);
+        if (result.TranslationUnavailable)
+            SetTranslatedSentenceMessage("Couldn't reach a translation service. Check your connection, or pick another source from the arrow.", leftToRight: true);
+        else
+            SetArabicText(result);
 
         SelectComboSilently(DictionarySourceCombo, dictionaryDefaultId, "Definition source", DictionarySourceCombo_SelectionChanged);
         SelectComboSilently(TranslationSourceCombo, translationDefaultId, "Translation source", TranslationSourceCombo_SelectionChanged);
+    }
+
+    /// <summary>The sparkle beside "Translation" marks an AI answer - Gemini's, or a refined one
+    /// from any AI source - with a tooltip that names which.</summary>
+    private void ApplyTranslationBadge(TranslationResult result)
+    {
+        var ai = result.IsTranslationFromGemini || result.IsRefined;
+        GeminiStar1.Visibility = ai ? Visibility.Visible : Visibility.Collapsed;
+        GeminiStar1.ToolTip = result.IsRefined
+            ? $"Rewritten naturally by {ProviderLabel(result.TranslationProvider)}"
+            : "Translated by Gemini";
+    }
+
+    private static string ProviderLabel(string id) =>
+        TranslationService.TranslationProviders.FirstOrDefault(p => p.Id == id).Label ?? id;
+
+    /// <summary>
+    /// Brings the popup on screen up to date with a better answer to the same lookup: the
+    /// definition arriving after the early half, or the AI's rewrite of the sentence. Only the
+    /// parts that changed cross-fade; the rest of the card holds still, so the update reads as
+    /// the answer settling rather than the popup being replaced.
+    /// </summary>
+    public void UpdateResult(TranslationResult result, string dictionaryDefaultId, string translationDefaultId)
+    {
+        var previous = _currentResult;
+        if (previous == null || previous.OriginalWord != result.OriginalWord)
+        {
+            SetTranslationResult(result, dictionaryDefaultId, translationDefaultId);
+            return;
+        }
+
+        var definitionChanged = previous.DefinitionPending != result.DefinitionPending ||
+                                !previous.Meanings.SequenceEqual(result.Meanings);
+        var translationChanged = previous.TranslatedSentence != result.TranslatedSentence ||
+                                 previous.ArabicWord != result.ArabicWord ||
+                                 previous.TranslationUnavailable != result.TranslationUnavailable;
+
+        _currentResult = result;
+        _geminiFetchTask = null;
+
+        if (definitionChanged)
+        {
+            FadeSwap(DictionarySection, () =>
+            {
+                GeminiStar2.Visibility = result.IsDefinitionFromGemini ? Visibility.Visible : Visibility.Collapsed;
+                MeaningText.Foreground = new SolidColorBrush(_secondaryColor);
+                ApplyDictionaryFields(
+                    result.Meanings.FirstOrDefault() ?? "Definition not found",
+                    result.Phonetic, result.PartOfSpeech, result.CefrLevel, result.Synonyms);
+                ApplyEncyclopedicFraming(result);
+                SelectComboSilently(DictionarySourceCombo, dictionaryDefaultId, "Definition source", DictionarySourceCombo_SelectionChanged);
+            });
+        }
+
+        if (translationChanged)
+        {
+            FadeSwap(TranslatedSentenceBox, () =>
+            {
+                if (result.TranslationUnavailable)
+                    SetTranslatedSentenceMessage("Couldn't reach a translation service. Check your connection, or pick another source from the arrow.", leftToRight: true);
+                else
+                    SetArabicText(result);
+                ApplyInlineWordTranslation(result);
+                ApplyTranslationBadge(result);
+                SelectComboSilently(TranslationSourceCombo, translationDefaultId, "Translation source", TranslationSourceCombo_SelectionChanged);
+            });
+        }
     }
 
     /// <summary>

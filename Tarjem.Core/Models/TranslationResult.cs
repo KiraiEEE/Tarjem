@@ -43,4 +43,19 @@ public class TranslationResult
 
     /// <summary>Attribution link for sources that require one (Wikipedia, Wiktionary).</summary>
     public string? SourceUrl { get; set; }
+
+    /// <summary>A translation was wanted and no source could give one - offline, or every source
+    /// failing. Shown as such, and never cached: the same word looked up a minute later, once the
+    /// connection is back, has to be asked again rather than served this.</summary>
+    public bool TranslationUnavailable { get; set; }
+
+    /// <summary>The definition is still being fetched; this result is the early half, shown so the
+    /// popup appears as soon as the translation is in.</summary>
+    public bool DefinitionPending { get; set; }
+
+    /// <summary>The translation was upgraded by an AI source after the popup first appeared.</summary>
+    public bool IsRefined { get; set; }
+
+    /// <summary>A shallow copy, for building the early and refined versions of one answer.</summary>
+    public TranslationResult Clone() => (TranslationResult)MemberwiseClone();
 }

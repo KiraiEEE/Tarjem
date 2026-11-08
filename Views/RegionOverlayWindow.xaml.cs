@@ -38,6 +38,7 @@ public partial class RegionOverlayWindow : Window
 {
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
+    private const int WS_EX_TRANSPARENT = 0x00000020;
     private const int GWL_EXSTYLE = -20;
     private const int FadeMs = 160;
     private const double DimOpacity = 0.10;
@@ -75,6 +76,19 @@ public partial class RegionOverlayWindow : Window
 
     /// <summary>The user picked a language from the overlay's own picker.</summary>
     public event EventHandler<LanguagePick>? LanguagePicked;
+
+    /// <summary>The user asked to keep translating this region as it changes.</summary>
+    public event EventHandler? LiveRequested;
+
+    /// <summary>Live mode reads the region again while this window is over it, which only works
+    /// when the window is invisible to screen capture (Windows 10 2004 and later).</summary>
+    public bool CanGoLive { get; private set; }
+
+    /// <summary>Whether the live chip is offered here at all (not for copied text).</summary>
+    public bool OffersLive { get; set; }
+
+    public bool IsLive => _live;
+    private bool _live;
 
     /// <summary>Fires with the text the copy button just put on the clipboard, so a clipboard
     /// watcher can tell our own copy apart from the user copying something new.</summary>
@@ -139,6 +153,11 @@ public partial class RegionOverlayWindow : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         var exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
         SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
+
+        // Invisible to screen capture, so the region underneath can be read again while the
+        // translation is showing - which is what live mode does, and what keeps an Alt+Q pressed
+        // over the overlay from reading the translation instead of the original.
+        CanGoLive = ScreenCaptureGuard.ExcludeFromCapture(hwnd);
     }
 
     // ── Dismissal ──
@@ -148,6 +167,8 @@ public partial class RegionOverlayWindow : Window
     /// dropdown only closes the dropdown rather than tearing down the whole overlay.</summary>
     private void Window_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (_live) return;
+
         var src = e.OriginalSource as DependencyObject;
         if (IsDescendantOf(src, ApiButton) || IsDescendantOf(src, ApiDropdown) || IsDescendantOf(src, CopyButton) ||
             IsDescendantOf(src, LanguageButton) || IsDescendantOf(src, OriginalButton) || IsDescendantOf(src, LanguagePanelHost))
@@ -191,6 +212,7 @@ public partial class RegionOverlayWindow : Window
         FadeTo(CopyButton, 0, dur);
         FadeTo(LanguageButton, 0, dur);
         FadeTo(OriginalButton, 0, dur);
+        FadeTo(LiveButton, 0, dur);
 
         var dim = new DoubleAnimation(DimOverlay.Opacity, 0, dur) { EasingFunction = EaseOut };
         dim.Completed += (_, _) =>
@@ -276,7 +298,7 @@ public partial class RegionOverlayWindow : Window
         // original, languages, provider, copy - in that order, so the provider list still hangs
         // off its own chip.
         var row = new List<(FrameworkElement Chip, Size Size)>();
-        foreach (var chip in new FrameworkElement[] { OriginalButton, LanguageButton, ApiButton, CopyButton })
+        foreach (var chip in new FrameworkElement[] { LiveButton, OriginalButton, LanguageButton, ApiButton, CopyButton })
         {
             if (chip.Visibility != Visibility.Visible && chip != ApiButton) continue;
             row.Add((chip, chip == ApiButton ? size : chip == CopyButton ? copySize : MeasureNatural(chip)));
@@ -483,7 +505,16 @@ public partial class RegionOverlayWindow : Window
 
     private void FadeInChips(TimeSpan dur)
     {
-        foreach (var chip in new UIElement[] { ApiButton, CopyButton, LanguageButton, OriginalButton })
+        if (_live)
+        {
+            HideChips();
+            return;
+        }
+
+        LiveButton.Visibility = OffersLive && CanGoLive && !string.IsNullOrWhiteSpace(CurrentOriginalText)
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        foreach (var chip in new UIElement[] { ApiButton, CopyButton, LanguageButton, OriginalButton, LiveButton })
         {
             if (chip.Opacity < 1)
                 chip.BeginAnimation(OpacityProperty, new DoubleAnimation(chip.Opacity, 1, dur) { EasingFunction = EaseOut });
@@ -528,7 +559,12 @@ public partial class RegionOverlayWindow : Window
         PositionApiChip();
 
         var dur = TimeSpan.FromMilliseconds(FadeMs);
-        BlocksLayer.BeginAnimation(OpacityProperty, new DoubleAnimation(0, _showingOriginalOnly ? 0 : 1, dur) { EasingFunction = EaseOut });
+
+        // Live updates swap in place: fading every new line up from nothing made dialogue flicker.
+        var target = _showingOriginalOnly ? 0 : 1;
+        BlocksLayer.BeginAnimation(OpacityProperty, _live
+            ? new DoubleAnimation(target, TimeSpan.FromMilliseconds(90))
+            : new DoubleAnimation(0, target, dur) { EasingFunction = EaseOut });
         FadeInChips(dur);
     }
 
@@ -693,6 +729,12 @@ public partial class RegionOverlayWindow : Window
     private void OriginalButton_Click(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        ToggleOriginal();
+    }
+
+    /// <summary>Hides the translation to show the original underneath, or brings it back.</summary>
+    public bool ToggleOriginal()
+    {
         _showingOriginalOnly = !_showingOriginalOnly;
 
         var to = _showingOriginalOnly ? 0 : 1;
@@ -702,6 +744,55 @@ public partial class RegionOverlayWindow : Window
 
         OriginalButton.ToolTip = _showingOriginalOnly ? "Show the translation" : "Show the original";
         OriginalIcon.Stroke = new SolidColorBrush(_showingOriginalOnly ? Color.FromRgb(0x5B, 0x9E, 0xF5) : Color.FromRgb(0xDD, 0xDD, 0xDD));
+        return _showingOriginalOnly;
+    }
+
+    // ── Live ──
+
+    private void LiveButton_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        LiveRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Turns this overlay into a live one: click-through, so the game underneath keeps getting
+    /// every click; no dim and no chips (their controls move to the live bar); the translation
+    /// still drawn over the text. Nothing here reads the screen - the service does that.
+    /// </summary>
+    public void EnterLive()
+    {
+        if (_live) return;
+        _live = true;
+
+        CloseDropdown(animate: false);
+        CloseLanguagePanel();
+        HideChips();
+
+        DimOverlay.BeginAnimation(OpacityProperty, null);
+        DimOverlay.Opacity = 0;
+        DimOverlay.Visibility = Visibility.Collapsed;
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        SetWindowLong(hwnd, GWL_EXSTYLE, GetWindowLong(hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT);
+    }
+
+    /// <summary>Clears the translation while live, when the watched area has no text in it.</summary>
+    public void ClearLive()
+    {
+        BlocksLayer.Children.Clear();
+        HighlightBorder.Visibility = Visibility.Collapsed;
+        TextContainer.Visibility = Visibility.Collapsed;
+        LoadingPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void HideChips()
+    {
+        foreach (var chip in new UIElement[] { ApiButton, CopyButton, LanguageButton, OriginalButton, LiveButton })
+        {
+            chip.BeginAnimation(OpacityProperty, null);
+            chip.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void ResetOriginalToggle()

@@ -38,6 +38,29 @@ public class HistoryEntry
     /// <summary>The list and detail pane used to hard-code right-to-left for every translation,
     /// which mirrored French and English answers. Entries saved before the target language was
     /// recorded fall back to looking at the script itself.</summary>
+    // ── Review (spaced repetition) - see Tarjem.Core.Learning.ReviewScheduler ──
+
+    /// <summary>When the word is next due for review; null until it has been reviewed once.</summary>
+    public DateTime? ReviewDue { get; set; }
+    public double ReviewIntervalDays { get; set; }
+    public double ReviewEase { get; set; }
+    public int ReviewCount { get; set; }
+    public int ReviewLapses { get; set; }
+
+    [JsonIgnore]
+    public Tarjem.Core.Learning.ReviewState Review
+    {
+        get => new(ReviewDue, ReviewIntervalDays, ReviewEase <= 0 ? Tarjem.Core.Learning.ReviewScheduler.StartingEase : ReviewEase, ReviewCount, ReviewLapses);
+        set
+        {
+            ReviewDue = value.Due;
+            ReviewIntervalDays = value.IntervalDays;
+            ReviewEase = value.Ease;
+            ReviewCount = value.Reviews;
+            ReviewLapses = value.Lapses;
+        }
+    }
+
     [JsonIgnore]
     public bool IsTranslationRtl => TargetLanguage.Length > 0
         ? TranslationService.IsRtlLanguage(TargetLanguage)

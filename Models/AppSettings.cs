@@ -4,6 +4,47 @@ namespace Tarjem.Models;
 
 public class AppSettings
 {
+    /// <summary>
+    /// Repairs whatever a settings file can say that the app can't use: a null where a list or a
+    /// hotkey belongs (JSON written by hand, or by a version that didn't have the property), a
+    /// language code the catalog doesn't know, a style name that no longer exists, a window size of
+    /// zero. Each bad value falls back to its default rather than taking the app down later, in
+    /// some unrelated place, the first time it's read.
+    /// </summary>
+    public AppSettings Sanitized()
+    {
+        var defaults = new AppSettings();
+
+        RecentTargetLanguages = (RecentTargetLanguages ?? new())
+            .Where(Tarjem.Core.Language.LanguageCatalog.IsKnown).Distinct().Take(4).ToList();
+        ModelHealth ??= new();
+        WordHotkey ??= HotkeyBinding.DefaultWord();
+        RegionHotkey ??= HotkeyBinding.DefaultRegion();
+        ExplainHotkey ??= HotkeyBinding.DefaultExplain();
+
+        if (!Tarjem.Core.Language.LanguageCatalog.IsKnown(SourceLanguage)) SourceLanguage = defaults.SourceLanguage;
+        else SourceLanguage = Tarjem.Core.Language.LanguageCatalog.Find(SourceLanguage)!.Code;
+        if (!Tarjem.Core.Language.LanguageCatalog.IsKnown(TargetLanguage)) TargetLanguage = defaults.TargetLanguage;
+        else TargetLanguage = Tarjem.Core.Language.LanguageCatalog.Find(TargetLanguage)!.Code;
+
+        if (RegionDisplayMode is not ("InPlace" or "Panel")) RegionDisplayMode = defaults.RegionDisplayMode;
+        if (RegionFontSizeMode is not ("MatchOriginal" or "FitRegion")) RegionFontSizeMode = defaults.RegionFontSizeMode;
+        if (Theme is not ("System" or "Light" or "Dark")) Theme = defaults.Theme;
+        if (ExplainAnswerLength is not ("Short" or "Standard" or "Full")) ExplainAnswerLength = defaults.ExplainAnswerLength;
+        if (string.IsNullOrWhiteSpace(PopupVisualStyle)) PopupVisualStyle = defaults.PopupVisualStyle;
+        if (string.IsNullOrWhiteSpace(DefaultTranslationProvider)) DefaultTranslationProvider = defaults.DefaultTranslationProvider;
+        if (string.IsNullOrWhiteSpace(DefaultDictionaryProvider)) DefaultDictionaryProvider = defaults.DefaultDictionaryProvider;
+        if (string.IsNullOrWhiteSpace(DefaultEncyclopediaProvider)) DefaultEncyclopediaProvider = defaults.DefaultEncyclopediaProvider;
+        if (string.IsNullOrWhiteSpace(RegionTranslationProvider)) RegionTranslationProvider = defaults.RegionTranslationProvider;
+
+        if (!(MainWindowWidth is >= 400 and <= 10000)) MainWindowWidth = defaults.MainWindowWidth;
+        if (!(MainWindowHeight is >= 300 and <= 10000)) MainWindowHeight = defaults.MainWindowHeight;
+
+        if (!ShowDictionarySection && !ShowTranslationSection) ShowDictionarySection = true;
+
+        return this;
+    }
+
     // ── API keys (legacy - migration only) ──
     // User-supplied keys now live DPAPI-encrypted in keys.dat alongside the shipped ones (see
     // SecureKeyService.SaveUserKey). settings.json is plaintext, so it is not somewhere an API
@@ -24,6 +65,11 @@ public class AppSettings
     /// popup, or can be set as the default here.</summary>
     public string DefaultDictionaryProvider { get; set; } = "freedictionaryapi.com";
     public string DefaultTranslationProvider { get; set; } = "google";
+
+    /// <summary>After the quick keyless translation is on screen, ask an AI source (when one has a
+    /// key) for a natural one and swap it in. The popup is as fast as before; the sentence just
+    /// gets better a moment later. Costs one AI request per lookup.</summary>
+    public bool RefineTranslationsWithAi { get; set; } = true;
 
     /// <summary>
     /// Which source Alt+W translates a region with. Separate from

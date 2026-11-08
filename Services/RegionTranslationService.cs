@@ -37,6 +37,22 @@ public class RegionTranslationService : IDisposable
     private int _redoGeneration;
     private EscapeWatcher? _escapeWatcher;
 
+    /// <summary>True while a region is being translated live. Alt+Q leaves a live region alone:
+    /// someone following a game's subtitles still wants to look up a word without losing them.</summary>
+    public bool IsLive => _liveTimer != null;
+
+    /// <summary>The selected region, in physical pixels - what live mode keeps watching.</summary>
+    private Rect _region;
+
+    // ── Live mode state ──
+    private System.Windows.Threading.DispatcherTimer? _liveTimer;
+    private LiveBarWindow? _liveBar;
+    private byte[]? _liveShownSignature;
+    private byte[]? _livePendingSignature;
+    private bool _livePaused;
+    private bool _liveBusy;
+    private bool _liveShowingOriginal;
+
     /// <summary>Fires when a region translation completes.</summary>
     public event EventHandler<TranslationResult>? TranslationCompleted;
 
@@ -190,6 +206,9 @@ public class RegionTranslationService : IDisposable
             };
             overlay.ApiChanged += OnApiChanged;
             overlay.LanguagePicked += OnLanguagePicked;
+            overlay.LiveRequested += (_, _) => StartLive(overlay);
+            overlay.OffersLive = true;
+            _region = screenRegion;
 
             var overlayOptions = _settingsService.Current;
             overlay.ApplyOptions(
@@ -271,11 +290,33 @@ public class RegionTranslationService : IDisposable
     /// <summary>Translates a reading with its provider and puts the result on the overlay.</summary>
     private async Task TranslateAndPresentAsync(RegionOverlayWindow overlay, RegionReading reading, CancellationToken ct)
     {
+        if (!System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+        {
+            Log.Information("Alt+W: offline");
+            ShowProblem(overlay, reading, "You're offline. Tarjem needs a connection to translate.");
+            return;
+        }
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
         var translated = await _translationService.TranslateBlockAsync(
             reading.Provider, reading.Text, reading.LanguageTag, reading.SourceIsGuess, ct);
         ct.ThrowIfCancellationRequested();
 
         if (!ReferenceEquals(overlay, _overlayWindow)) return;
+
+        Log.Information("Alt+W: {Blocks} blocks ({Language}), {Outcome} in {Ms} ms",
+            reading.Blocks.Count, reading.LanguageTag,
+            translated == null ? "no source answered" : $"translated by {translated.ProviderId}",
+            started.ElapsedMilliseconds);
+
+        if (translated == null)
+        {
+            // Showing the original text here, as this used to, looked like a translation that
+            // happened to change nothing.
+            ShowProblem(overlay, reading,
+                "Couldn't translate this right now - no translation service answered. Check your connection, or pick another source from the arrow above.");
+            return;
+        }
 
         // The translator saw whole sentences; when it says the text is in another language than
         // OCR guessed, the label on the chip follows it.
@@ -472,6 +513,20 @@ public class RegionTranslationService : IDisposable
         }
     }
 
+    /// <summary>Says what went wrong in the overlay itself, keeping the reading so that picking
+    /// another source or language from the chips above retries it.</summary>
+    private void ShowProblem(RegionOverlayWindow overlay, RegionReading reading, string message)
+    {
+        if (!ReferenceEquals(overlay, _overlayWindow)) return;
+
+        _reading = reading;
+        var settings = _settingsService.Current;
+        overlay.SetProviders(TranslationService.TranslationProviders, reading.Provider);
+        overlay.SetLanguages(reading.LanguageTag, settings.AutoDetectSourceLanguage, settings.TargetLanguage,
+            OcrService.InstalledLanguages(), LanguageChoice.RecentTargets(settings));
+        overlay.SetTranslation(reading.Text, message);
+    }
+
     private void ShowNoTextFound(RegionOverlayWindow overlay)
     {
         if (!ReferenceEquals(overlay, _overlayWindow)) return;
@@ -549,10 +604,185 @@ public class RegionTranslationService : IDisposable
         }
     }
 
+    // ===================== Live mode =====================
+
+    /// <summary>How often a live region is looked at. Each look is a tiny thumbnail comparison;
+    /// OCR and translation only run when the text has actually changed.</summary>
+    private static readonly TimeSpan LiveInterval = TimeSpan.FromMilliseconds(450);
+
+    /// <summary>Thumbnail the change detector compares, in cells. Coarse on purpose: a caret
+    /// blinking or a particle drifting past must not count as new dialogue; a new line does.</summary>
+    private const int SignatureWidth = 48;
+    private const int SignatureHeight = 12;
+
+    /// <summary>
+    /// Keeps translating the selected region as its text changes - dialogue boxes, subtitles, a
+    /// quest log - so a game can be played in another language without pressing anything per line.
+    ///
+    /// The loop is built to cost nothing while nothing happens: every tick takes a 48x12 thumbnail
+    /// of the region and compares it with the last one. Only when the picture has changed, and then
+    /// held still for one more tick (text that types itself out letter by letter is translated
+    /// once, finished, not twelve times), is it read and translated - and a line already
+    /// translated comes straight back out of the cache.
+    /// </summary>
+    private void StartLive(RegionOverlayWindow overlay)
+    {
+        if (!ReferenceEquals(overlay, _overlayWindow) || !overlay.CanGoLive || _liveTimer != null) return;
+
+        overlay.EnterLive();
+
+        // Esc no longer ends it: it's the pause-menu key in most games, and it also closes an
+        // Alt+Q popup opened over the subtitles. The bar's stop button, or Alt+W, ends live mode.
+        StopEscapeWatcher();
+        _livePaused = false;
+        _liveShowingOriginal = false;
+        _liveShownSignature = _capture != null ? Signature(_capture) : null;
+        _livePendingSignature = null;
+
+        _liveBar = new LiveBarWindow();
+        _liveBar.PauseToggled += (_, _) =>
+        {
+            _livePaused = !_livePaused;
+            UpdateLiveBar();
+        };
+        _liveBar.OriginalToggled += (_, _) =>
+        {
+            if (_overlayWindow != null) _liveShowingOriginal = _overlayWindow.ToggleOriginal();
+            UpdateLiveBar();
+        };
+        _liveBar.StopRequested += (_, _) => Cancel(immediate: true);
+        _liveBar.PlaceBeside(_region);
+        UpdateLiveBar();
+
+        _liveTimer = new System.Windows.Threading.DispatcherTimer { Interval = LiveInterval };
+        _liveTimer.Tick += async (_, _) => await LiveTickAsync();
+        _liveTimer.Start();
+
+        Log.Information("Alt+W: live mode started");
+    }
+
+    private void UpdateLiveBar() => _liveBar?.SetState(_livePaused, _liveBusy, _liveShowingOriginal);
+
+    private async Task LiveTickAsync()
+    {
+        var overlay = _overlayWindow;
+        if (overlay == null || !overlay.IsLive || _livePaused || _liveBusy) return;
+
+        Bitmap? frame = null;
+        try
+        {
+            frame = await CaptureRegionAsync((int)_region.Left, (int)_region.Top, (int)_region.Width, (int)_region.Height);
+            if (frame == null || !ReferenceEquals(overlay, _overlayWindow)) return;
+
+            var signature = Signature(frame);
+
+            // Unchanged since the translation on screen: nothing to do.
+            if (_liveShownSignature != null && Similar(signature, _liveShownSignature))
+            {
+                _livePendingSignature = null;
+                return;
+            }
+
+            // Changed, but still moving - wait until it holds still for a tick.
+            if (_livePendingSignature == null || !Similar(signature, _livePendingSignature))
+            {
+                _livePendingSignature = signature;
+                return;
+            }
+
+            _liveBusy = true;
+            UpdateLiveBar();
+
+            var ct = _cts?.Token ?? CancellationToken.None;
+            var reading = await ReadAsync(frame, ct);
+            if (!ReferenceEquals(overlay, _overlayWindow)) return;
+
+            _liveShownSignature = signature;
+            _livePendingSignature = null;
+
+            if (reading == null)
+            {
+                // The dialogue box closed: show nothing rather than the last line.
+                _reading = null;
+                overlay.ClearLive();
+                return;
+            }
+
+            // Same words, moved or redrawn (a box sliding in): keep the translation on screen.
+            if (_reading != null && _reading.Text == reading.Text)
+                return;
+
+            ReplaceCapture(frame);
+            frame = null;
+            await TranslateAndPresentAsync(overlay, reading, ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Live region update failed");
+        }
+        finally
+        {
+            frame?.Dispose();
+            _liveBusy = false;
+            UpdateLiveBar();
+        }
+    }
+
+    private void StopLive()
+    {
+        if (_liveTimer == null && _liveBar == null) return;
+
+        _liveTimer?.Stop();
+        _liveTimer = null;
+        try { _liveBar?.Close(); } catch { }
+        _liveBar = null;
+        _liveShownSignature = _livePendingSignature = null;
+        Log.Information("Alt+W: live mode stopped");
+    }
+
+    /// <summary>A coarse grayscale thumbnail of the frame, for change detection.</summary>
+    private static byte[] Signature(Bitmap frame)
+    {
+        using var small = new Bitmap(SignatureWidth, SignatureHeight, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(small))
+        {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+            g.DrawImage(frame, 0, 0, SignatureWidth, SignatureHeight);
+        }
+
+        var data = small.LockBits(new Rectangle(0, 0, SignatureWidth, SignatureHeight), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var raw = new byte[Math.Abs(data.Stride) * SignatureHeight];
+        Marshal.Copy(data.Scan0, raw, 0, raw.Length);
+        small.UnlockBits(data);
+
+        var stride = Math.Abs(data.Stride);
+        var gray = new byte[SignatureWidth * SignatureHeight];
+        for (var y = 0; y < SignatureHeight; y++)
+            for (var x = 0; x < SignatureWidth; x++)
+            {
+                var i = y * stride + x * 4;
+                gray[y * SignatureWidth + x] = (byte)((raw[i] * 11 + raw[i + 1] * 59 + raw[i + 2] * 30) / 100);
+            }
+        return gray;
+    }
+
+    /// <summary>Two thumbnails show the same text: almost every cell within a small tolerance.
+    /// A new line of dialogue changes a large share of cells; noise changes a few.</summary>
+    private static bool Similar(byte[] a, byte[] b)
+    {
+        if (a.Length != b.Length) return false;
+        var changed = 0;
+        for (var i = 0; i < a.Length; i++)
+            if (Math.Abs(a[i] - b[i]) > 12) changed++;
+        return changed <= a.Length / 50;
+    }
+
     private void CloseOverlayWindow()
     {
         // Nothing left on screen to cancel once the overlay is gone.
         StopEscapeWatcher();
+        StopLive();
 
         if (_overlayWindow != null)
         {

@@ -18,8 +18,13 @@ public static class TranslationPrompts
     /// low temperature makes the model take the single most probable continuation at each step,
     /// and for a translation the most probable continuation is the word-for-word mapping of the
     /// source. The instructions above ask for a rewrite; this is what lets the model produce one.
+    ///
+    /// Lowered from 0.6 in 0.8 after measuring it: at 0.6 Gemini turned "You shouldn't have come
+    /// back here, kid" into an ungrammatical Polish infinitive with a vulgar insult for "kid", and
+    /// into Arabic addressed to a girl. 0.35 still rewrites idioms naturally ("a bone to pick" came
+    /// out as the Arabic idiom, not a bone) without inventing tone or facts.
     /// </summary>
-    public const double RewriteTemperature = 0.6;
+    public const double RewriteTemperature = 0.35;
 
     /// <summary>Temperature for calls answering a question of fact (encyclopedia, dictionary
     /// fields) where the most probable answer is exactly the one wanted.</summary>
@@ -33,7 +38,72 @@ You do not translate word by word. You read the whole meaning, then write it aga
 
 Match the register and tone of the original: casual stays casual, formal stays formal, and game or story dialogue keeps its character and energy.
 
-Use only native {targetLanguageName} script and spelling. Never transliterate, never leave source-language words in, never add notes, alternatives, parentheses or explanations.";
+Faithfulness comes first, fluency second. Natural phrasing never licenses changing what is said:
+- Never escalate or soften the tone. A mild word stays mild - do not turn ""kid"" into an insult, or an insult into something polite. Add no profanity, emphasis or emotion the original doesn't have.
+- Never invent facts, gender or relationships. When the original doesn't say who is speaking or being addressed, use the conventional default of {targetLanguageName} grammar (in Arabic, Polish and similar languages, the masculine) rather than guessing.
+- Keep the same term for the same thing every time it appears.
+- The result must be grammatically correct {targetLanguageName}: check agreement, case, tense and word order before answering.
+
+Use only native {targetLanguageName} script and spelling. Never transliterate, never leave source-language words in, never add notes, alternatives, parentheses or explanations.{LanguageNotes(targetLanguageName)}";
+
+    /// <summary>
+    /// What a native writer of the target language would insist on that a model left to itself
+    /// gets wrong. Only for languages where there is something specific to say; for the rest, the
+    /// general instruction above is the whole of it.
+    /// </summary>
+    public static string LanguageNotes(string targetLanguageName) => targetLanguageName switch
+    {
+        "Arabic" => """
+
+
+Writing Arabic:
+- Modern Standard Arabic, in the clear, simple register of well-localized games and apps - not classical or ornate, and not dialect.
+- Arabic sentence order (verb-first where natural), not English order with Arabic words.
+- Arabic punctuation: ، ؛ ؟ - never the Latin comma or question mark.
+- Interface commands as direct imperatives (اضغط، اختر، تابع), consistently.
+- Keep digits, names and on-screen key names as they appear.
+""",
+        "Persian" => """
+
+
+Writing Persian: natural modern Persian with Persian punctuation (، ؛ ؟), the Persian letters ی and ک (never the Arabic forms), and the half-space where Persian uses it (می‌شود).
+""",
+        "Urdu" => """
+
+
+Writing Urdu: natural modern Urdu in Nastaliq-friendly spelling with Urdu punctuation (، ؟ ۔); prefer everyday Urdu vocabulary over heavy Persian or Arabic borrowings.
+""",
+        "Hebrew" => """
+
+
+Writing Hebrew: modern Israeli Hebrew without niqqud, in the plain register of localized software.
+""",
+        "Polish" => """
+
+
+Writing Polish:
+- Correct case endings, verb aspect and gender agreement - an infinitive is not a finished sentence.
+- Interface commands in the imperative (Naciśnij, Wybierz, Kontynuuj), as Polish software writes them.
+- Address the reader the way the original does: informal "ty" for casual or game dialogue, the neutral impersonal form for formal interface text.
+- Keep the original's level of politeness and rudeness exactly.
+""",
+        "Russian" or "Ukrainian" or "Czech" or "Slovak" or "Croatian" or "Bulgarian" => $"""
+
+
+Writing {targetLanguageName}: correct case endings, verb aspect and gender agreement; interface commands in the imperative, as {targetLanguageName} software writes them; keep the original's level of politeness exactly.
+""",
+        "Japanese" => """
+
+
+Writing Japanese: natural Japanese with the politeness level the context calls for (plain form for casual dialogue, です/ます for interface text), Japanese punctuation, and no spaces between words.
+""",
+        "Chinese (Simplified)" or "Chinese (Traditional)" => $"""
+
+
+Writing {targetLanguageName}: natural {targetLanguageName} with full-width Chinese punctuation and no spaces between words.
+""",
+        _ => "",
+    };
 
     /// <summary>
     /// Region (Alt+W) translation: an arbitrary block of text lifted off the screen.
@@ -57,6 +127,8 @@ Write it as though it had been authored in {targetLanguageName} in the first pla
 - Use {targetLanguageName} word order and sentence structure throughout. Do not carry the original's clause order, punctuation habits or connectives across.
 - Keep proper nouns, character names, brands and on-screen key names as they are, unless {targetLanguageName} has an established form for them.
 - Match the register exactly: casual stays casual, formal stays formal, and dialogue keeps its character's voice and energy.
+- Keep every word's strength: never make it ruder, more vulgar, more affectionate or more formal than the original. A neutral word like ""kid"" gets a neutral equivalent, not a slur.
+- Write in the standard written language, not a regional dialect, unless the original is itself in dialect.
 - Keep it about as long as the original. It is drawn back over the space the text came from, so an explanatory expansion will not fit.
 
 Each line below is one complete unit - a sentence or paragraph, a menu entry, a list item, a line of dialogue. Lines that merely wrapped on screen have already been joined, so never split a line and never merge two. Return the same number of lines in the same order, because the result is drawn back over the layout it came from - but within each line, restructure freely. The text was read by OCR and may contain recognition errors: infer what was meant and translate that, rather than reproducing an obvious typo. If a fragment is cut off mid-sentence, translate the fragment as a fragment; do not invent an ending for it.

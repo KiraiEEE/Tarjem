@@ -129,6 +129,9 @@ public partial class App : Application
 
             // Same reason: the first popup decides whether to show its speaker button.
             PronunciationService.WarmUp();
+
+            // And the first translation shouldn't pay for a TLS handshake.
+            _ = _translationService.WarmUpAsync();
         });
 
         _regionTranslationService = new RegionTranslationService(
@@ -316,6 +319,16 @@ public partial class App : Application
         ApplyHistoryMenuVisibility();
         _settingsService!.Changed += (_, _) => Dispatcher.Invoke(ApplyHistoryMenuVisibility);
 
+        // Practice the saved words. Labelled with the count due when there are any.
+        var reviewItem = new System.Windows.Controls.MenuItem { Header = "Review words" };
+        reviewItem.Click += (_, _) => OpenReview();
+        contextMenu.Opened += (_, _) =>
+        {
+            var due = _historyService!.DueCount(DateTime.Now);
+            reviewItem.Header = due > 0 ? $"Review words ({due} due)" : "Review words";
+            reviewItem.Visibility = _settingsService!.Current.HistoryEnabled ? Visibility.Visible : Visibility.Collapsed;
+        };
+
         var settingsItem = new System.Windows.Controls.MenuItem { Header = "Settings" };
         settingsItem.Click += (s, args) => ShowMainWindow(SettingsTabIndex);
 
@@ -335,6 +348,7 @@ public partial class App : Application
         contextMenu.Items.Add(fromItem);
         contextMenu.Items.Add(toItem);
         contextMenu.Items.Add(new System.Windows.Controls.Separator());
+        contextMenu.Items.Add(reviewItem);
         contextMenu.Items.Add(historyItem);
         contextMenu.Items.Add(settingsItem);
         contextMenu.Items.Add(new System.Windows.Controls.Separator());
@@ -395,14 +409,87 @@ public partial class App : Application
         return item;
     }
 
+    private ReviewWindow? _review;
+
+    /// <summary>The review session, opened from the tray. Through the main window when it's open,
+    /// so there's only ever one session.</summary>
+    private void OpenReview()
+    {
+        try
+        {
+            if (_mainWindow is { IsLoaded: true })
+            {
+                _mainWindow.OpenReview();
+                return;
+            }
+
+            if (_review is { IsLoaded: true })
+            {
+                _review.Activate();
+                return;
+            }
+
+            _review = new ReviewWindow(_historyService!);
+            _review.Closed += (_, _) => _review = null;
+            _review.Show();
+            _review.Activate();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Could not open the review window");
+        }
+    }
+
     private void ApplyHistoryMenuVisibility()
     {
         if (_historyMenuItem != null)
             _historyMenuItem.Visibility = _settingsService!.Current.HistoryEnabled ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void OnWordHotkeyPressed(object? sender, EventArgs e) => _ = RunLookupAsync(LookupMode.Translate);
-    private void OnExplainHotkeyPressed(object? sender, EventArgs e) => _ = RunLookupAsync(LookupMode.Explain);
+    private void OnWordHotkeyPressed(object? sender, EventArgs e)
+    {
+        WarnIfExclusiveFullscreen();
+        _ = RunLookupAsync(LookupMode.Translate);
+    }
+
+    private void OnExplainHotkeyPressed(object? sender, EventArgs e)
+    {
+        WarnIfExclusiveFullscreen();
+        _ = RunLookupAsync(LookupMode.Explain);
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    private static extern int SHQueryUserNotificationState(out int state);
+
+    /// <summary>QUNS_RUNNING_D3D_FULL_SCREEN: a Direct3D app owns the display exclusively.</summary>
+    private const int ExclusiveFullscreen = 3;
+
+    private bool _warnedAboutFullscreen;
+
+    /// <summary>
+    /// A game in exclusive fullscreen owns the display: nothing else can draw over it, and screen
+    /// captures of it come back black. Every hotkey then silently did nothing. Windows does say
+    /// when this is the case, so say it once per session - in the tray, which is still seen after
+    /// alt-tabbing - with the one setting that fixes it.
+    /// </summary>
+    private void WarnIfExclusiveFullscreen()
+    {
+        if (_warnedAboutFullscreen) return;
+        try
+        {
+            if (SHQueryUserNotificationState(out var state) != 0 || state != ExclusiveFullscreen) return;
+
+            _warnedAboutFullscreen = true;
+            Log.Information("Hotkey pressed over an exclusive-fullscreen game");
+            _trayIcon?.ShowBalloonTip("Tarjem can't draw over this game",
+                "It's running in exclusive fullscreen. Switch it to Borderless or Windowed fullscreen in its display settings and Tarjem will work over it.",
+                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Could not query the fullscreen state");
+        }
+    }
 
     /// <summary>
     /// Drives one press of a word hotkey: cancel whatever is in flight, run the pipeline, show the
@@ -429,16 +516,27 @@ public partial class App : Application
         var cts = new CancellationTokenSource();
         _cts = cts;
 
+        // A ceiling on the whole press. Every source has its own budget, but a chain of them plus
+        // a slow AI fallback could still leave the Alt+E card spinning; past this the user is told
+        // and the screen is given back.
+        using var deadline = new CancellationTokenSource(LookupDeadline);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, deadline.Token);
+        var token = linked.Token;
+        var shownEarly = false;
+
         // Tear down a region translation still on screen for the same reason the region hotkey
         // tears down a word popup: the two can't coexist, and a leftover region overlay keeps the
         // screen dimmed. At once rather than faded, and gone from the screen before the capture
         // below - otherwise OCR reads our own overlay instead of the word under the cursor.
-        if (_regionTranslationService?.Cancel(immediate: true) == true)
+        // A live region stays: it's invisible to the capture below, and closing someone's live
+        // subtitles because they looked up a word would make the two features fight.
+        if (_regionTranslationService?.IsLive != true && _regionTranslationService?.Cancel(immediate: true) == true)
             ScreenCaptureGuard.WaitForCompositor();
 
         try
         {
             var cursor = System.Windows.Forms.Cursor.Position;
+            _lastCursor = cursor;
 
             // Alt+E shows its card immediately in a loading state, because the encyclopedia round
             // trip is the slowest of the three hotkeys and a key that appears to do nothing for a
@@ -449,7 +547,7 @@ public partial class App : Application
             // that ended without a result then had to remember to take the overlay back down
             // again, and the one that didn't left the whole screen dimmed until the next click.
             var word = mode == LookupMode.Explain
-                ? await _lookupPipeline.PeekWordAsync(cursor, cts.Token)
+                ? await _lookupPipeline.PeekWordAsync(cursor, token)
                 : null;
 
             ExplainWindow? explain = null;
@@ -460,7 +558,19 @@ public partial class App : Application
                 explain = _overlayService.ShowExplainLoading(word.WordRectPhysical, word.Word, word.LanguageTag);
             }
 
-            var outcome = await _lookupPipeline.RunAsync(mode, cursor, cts.Token, word);
+            // The popup goes up as soon as the translation is in; the definition follows into it.
+            Action<LookupOutcome>? onEarly = mode == LookupMode.Translate
+                ? early => Dispatcher.Invoke(() =>
+                {
+                    if (IsStale(generation) || early.Result == null || token.IsCancellationRequested) return;
+                    _overlayService.HideExplain();
+                    _overlayService.ShowHighlight(early.WordRectPhysical);
+                    _overlayService.ShowTranslationPopup(early.WordRectPhysical, early.Result);
+                    shownEarly = true;
+                })
+                : null;
+
+            var outcome = await _lookupPipeline.RunAsync(mode, cursor, token, word, onEarly);
 
             // A newer press has superseded this one, so it now owns the shared overlay. Bow out
             // without touching it: tearing anything down here would pull the highlight or loading
@@ -476,6 +586,9 @@ public partial class App : Application
             if (outcome?.Result == null)
             {
                 _overlayService.DismissAll();
+                ToastWindow.Show(mode == LookupMode.Explain && word is { Found: true }
+                    ? "Nothing came back for that word."
+                    : "No text found under the cursor.", cursor);
                 return;
             }
 
@@ -485,16 +598,37 @@ public partial class App : Application
                 return;
             }
 
-            // Clear any loading card a previous Alt+E press left behind before showing the word popup.
-            _overlayService.HideExplain();
-            _overlayService.ShowHighlight(outcome.WordRectPhysical);
             _mainWindow?.RefreshHistory();
-            _overlayService.ShowTranslationPopup(outcome.WordRectPhysical, outcome.Result);
+
+            if (!shownEarly || !_overlayService.UpdateTranslationPopup(outcome.WordRectPhysical, outcome.Result))
+            {
+                // Clear any loading card a previous Alt+E press left behind before showing the word popup.
+                _overlayService.HideExplain();
+                _overlayService.ShowHighlight(outcome.WordRectPhysical);
+                _overlayService.ShowTranslationPopup(outcome.WordRectPhysical, outcome.Result);
+            }
+
+            _ = RefineAsync(generation, cts, outcome);
+        }
+        catch (OfflineException)
+        {
+            if (!IsStale(generation))
+            {
+                _overlayService.DismissAll();
+                ToastWindow.Show("You're offline. Tarjem needs a connection to translate.", _lastCursor);
+            }
         }
         catch (OperationCanceledException)
         {
             // Superseded by a newer lookup, or the overlay was dismissed mid-flight - either way
-            // there's nothing stale left to show.
+            // there's nothing stale left to show. Unless it was the deadline: then say so, rather
+            // than leave the user wondering whether the press registered.
+            if (deadline.IsCancellationRequested && !cts.IsCancellationRequested && !IsStale(generation))
+            {
+                Log.Warning("{Mode} gave up after {Seconds} s", mode, LookupDeadline.TotalSeconds);
+                _overlayService.DismissAll();
+                ToastWindow.Show("That took too long - the translation services may be busy. Try again in a moment.", _lastCursor);
+            }
         }
         catch (Exception ex)
         {
@@ -504,10 +638,37 @@ public partial class App : Application
         }
     }
 
+    private static readonly TimeSpan LookupDeadline = TimeSpan.FromSeconds(20);
+    private System.Drawing.Point _lastCursor;
+
+    /// <summary>Swaps the AI's natural rewrite of the sentence into the popup once it arrives, as
+    /// long as that popup is still the one on screen.</summary>
+    private async Task RefineAsync(long generation, CancellationTokenSource cts, LookupOutcome outcome)
+    {
+        if (_lookupPipeline == null || _overlayService == null || outcome.Result == null) return;
+
+        try
+        {
+            var refined = await _lookupPipeline.RefineAsync(outcome.Result, cts.Token);
+            if (refined == null || IsStale(generation) || cts.IsCancellationRequested) return;
+
+            _overlayService.UpdateTranslationPopup(outcome.WordRectPhysical, refined);
+            _mainWindow?.RefreshHistory();
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Refining a translation failed");
+        }
+    }
+
     private void OnRegionHotkeyPressed(object? sender, EventArgs e)
     {
         if (_regionTranslationService == null || _ocrService == null)
             return;
+
+        WarnIfExclusiveFullscreen();
 
         // A word lookup and a region translation can't both be on screen at once. Without this,
         // an Alt+Q popup (and its full-screen dim) stayed up behind the region flow and was still

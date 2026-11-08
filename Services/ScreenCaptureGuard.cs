@@ -31,19 +31,21 @@ public static class ScreenCaptureGuard
     /// showing a translation stays capturable, because a user taking their own screenshot of it is
     /// a reasonable thing to want; those are closed before a capture instead.
     /// </summary>
-    public static void ExcludeFromCapture(IntPtr hwnd)
+    /// <returns>True when the window is now invisible to screen capture (Windows 10 2004 and later).</returns>
+    public static bool ExcludeFromCapture(IntPtr hwnd)
     {
-        if (hwnd == IntPtr.Zero) return;
+        if (hwnd == IntPtr.Zero) return false;
 
         try
         {
-            if (!SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE))
-                Log.Debug("SetWindowDisplayAffinity failed ({Error}); overlay may appear in captures", Marshal.GetLastWin32Error());
+            if (SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)) return true;
+            Log.Information("SetWindowDisplayAffinity failed ({Error}); overlays may appear in captures", Marshal.GetLastWin32Error());
         }
         catch (Exception ex)
         {
             Log.Debug(ex, "Could not exclude an overlay from screen capture");
         }
+        return false;
     }
 
     /// <summary>

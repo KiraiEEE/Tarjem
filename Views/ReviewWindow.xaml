@@ -1,0 +1,158 @@
+<ui:FluentWindow x:Class="Tarjem.Views.ReviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Tarjem - Review"
+        Width="560"
+        Height="600"
+        MinWidth="440"
+        MinHeight="480"
+        WindowStartupLocation="CenterScreen"
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica"
+        WindowCornerPreference="Round"
+        PreviewKeyDown="Window_PreviewKeyDown">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="Review">
+            <ui:TitleBar.Icon>
+                <ui:ImageIcon Source="pack://application:,,,/Tarjem;component/Assets/icon.ico"/>
+            </ui:TitleBar.Icon>
+        </ui:TitleBar>
+
+        <!-- Reviewing -->
+        <Grid x:Name="ReviewPanel" Grid.Row="1" Margin="28,8,28,24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Margin="0,0,0,14">
+                <TextBlock x:Name="ProgressText"
+                           FontSize="12"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                <TextBlock x:Name="KindText"
+                           HorizontalAlignment="Right"
+                           FontSize="12"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                <ProgressBar x:Name="Progress"
+                             Height="3"
+                             Margin="0,22,0,0"
+                             VerticalAlignment="Top"/>
+            </Grid>
+
+            <Border Grid.Row="1"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="28,24">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock x:Name="WordText"
+                                       FontSize="32"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                            <ui:Button x:Name="SpeakButton"
+                                       Appearance="Transparent"
+                                       Icon="{ui:SymbolIcon Speaker224}"
+                                       Margin="8,0,0,0"
+                                       Padding="6"
+                                       VerticalAlignment="Center"
+                                       ToolTip="Pronounce"
+                                       Visibility="Collapsed"
+                                       Click="Speak_Click"/>
+                        </StackPanel>
+                        <TextBlock x:Name="PhoneticText"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,4,0,0"
+                                   FontSize="13"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+
+                        <TextBlock x:Name="PromptText"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,26,0,0"
+                                   FontSize="12.5"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                   Text="Do you remember what it means?"/>
+
+                        <StackPanel x:Name="AnswerPanel" Visibility="Collapsed" Margin="0,22,0,0">
+                            <Separator Margin="0,0,0,18"/>
+                            <TextBlock x:Name="TranslationText"
+                                       FontSize="24"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"/>
+                            <TextBlock x:Name="DefinitionText"
+                                       Margin="0,14,0,0"
+                                       FontSize="14"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                            <TextBlock x:Name="SentenceText"
+                                       Margin="0,14,0,0"
+                                       FontSize="13"
+                                       FontStyle="Italic"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <Grid Grid.Row="2" Margin="0,16,0,0">
+                <ui:Button x:Name="RevealButton"
+                           Appearance="Primary"
+                           HorizontalAlignment="Stretch"
+                           Height="40"
+                           Content="Show answer   (Space)"
+                           Click="Reveal_Click"/>
+
+                <UniformGrid x:Name="GradeButtons" Columns="4" Visibility="Collapsed">
+                    <ui:Button x:Name="AgainButton" Margin="0,0,6,0" Height="48" HorizontalAlignment="Stretch" Click="Grade_Click" Tag="Again"/>
+                    <ui:Button x:Name="HardButton" Margin="3,0,3,0" Height="48" HorizontalAlignment="Stretch" Click="Grade_Click" Tag="Hard"/>
+                    <ui:Button x:Name="GoodButton" Margin="3,0,3,0" Height="48" HorizontalAlignment="Stretch" Click="Grade_Click" Tag="Good" Appearance="Primary"/>
+                    <ui:Button x:Name="EasyButton" Margin="6,0,0,0" Height="48" HorizontalAlignment="Stretch" Click="Grade_Click" Tag="Easy"/>
+                </UniformGrid>
+            </Grid>
+        </Grid>
+
+        <!-- Done -->
+        <StackPanel x:Name="DonePanel"
+                    Grid.Row="1"
+                    Visibility="Collapsed"
+                    VerticalAlignment="Center"
+                    HorizontalAlignment="Center"
+                    Margin="32">
+            <ui:SymbolIcon Symbol="HatGraduation24" FontSize="44" HorizontalAlignment="Center"
+                           Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"/>
+            <TextBlock x:Name="DoneTitle"
+                       Margin="0,14,0,0"
+                       HorizontalAlignment="Center"
+                       FontSize="20"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                       Text="All caught up"/>
+            <TextBlock x:Name="DoneText"
+                       Margin="0,6,0,0"
+                       MaxWidth="360"
+                       TextWrapping="Wrap"
+                       TextAlignment="Center"
+                       HorizontalAlignment="Center"
+                       FontSize="13"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <ui:Button Margin="0,20,0,0" HorizontalAlignment="Center" Content="Close" Click="Close_Click"/>
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>

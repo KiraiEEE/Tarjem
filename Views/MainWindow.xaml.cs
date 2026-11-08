@@ -157,6 +157,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _binder.Bind(PopupStyleComboBox, s => s.PopupVisualStyle, (s, v) => s.PopupVisualStyle = v);
         _binder.Bind(RegionFontSizeModeCombo, s => s.RegionFontSizeMode, (s, v) => s.RegionFontSizeMode = v);
         _binder.Bind(RegionDisplayModeCombo, s => s.RegionDisplayMode, (s, v) => s.RegionDisplayMode = v);
+        _binder.Bind(RefineWithAiToggle, s => s.RefineTranslationsWithAi, (s, v) => s.RefineTranslationsWithAi = v);
 
         _binder.Fill(RegionTranslationProviderCombo, TranslationService.RegionTranslationSources, _settings.Current.RegionTranslationProvider);
         _binder.Bind(RegionTranslationProviderCombo, s => s.RegionTranslationProvider, (s, v) => s.RegionTranslationProvider = v);
@@ -211,6 +212,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         CheckForUpdatesToggle.IsChecked = s.CheckForUpdates;
         HistoryEnabledToggle.IsChecked = s.HistoryEnabled;
         ShowTranslationSectionToggle.IsChecked = s.ShowTranslationSection;
+        RefineWithAiToggle.IsChecked = s.RefineTranslationsWithAi;
         ShowDictionarySectionToggle.IsChecked = s.ShowDictionarySection;
         ExplainTranslateAnswerToggle.IsChecked = s.ExplainTranslateAnswer;
         ExplainShowOriginalToggle.IsChecked = s.ExplainShowOriginal;
@@ -427,6 +429,37 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         _allEntries = _history.Entries.ToList();
         ApplyFilter();
+        UpdateReviewButton();
+    }
+
+    private void UpdateReviewButton()
+    {
+        var due = _history.DueCount(DateTime.Now);
+        ReviewButton.Content = due > 0 ? $"Review  {due}" : "Review";
+        ReviewButton.Appearance = due > 0 ? Wpf.Ui.Controls.ControlAppearance.Primary : Wpf.Ui.Controls.ControlAppearance.Secondary;
+    }
+
+    private ReviewWindow? _review;
+
+    private void ReviewButton_Click(object sender, RoutedEventArgs e) => OpenReview();
+
+    /// <summary>Opens the review session, or brings the open one forward.</summary>
+    public void OpenReview()
+    {
+        if (_review is { IsLoaded: true })
+        {
+            _review.Activate();
+            return;
+        }
+
+        _review = new ReviewWindow(_history) { Owner = this };
+        _review.Reviewed += (_, _) => UpdateReviewButton();
+        _review.Closed += (_, _) =>
+        {
+            _review = null;
+            LoadHistory();
+        };
+        _review.Show();
     }
 
     private void ApplyFilter()
