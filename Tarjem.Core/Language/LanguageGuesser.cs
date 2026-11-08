@@ -20,7 +20,7 @@ namespace Tarjem.Core.Language;
 /// </summary>
 public static class LanguageGuesser
 {
-    public enum Script { Latin, Arabic, Cyrillic, Cjk, Hangul, Devanagari }
+    public enum Script { Latin, Arabic, Cyrillic, Cjk, Hangul, Devanagari, Greek, Hebrew, Thai, Bengali }
 
     /// <summary>The script a language code's OCR engine reads. Unknown codes are treated as Latin,
     /// which is what the bulk of the world's languages - and of this app's list - are written in.</summary>
@@ -31,6 +31,10 @@ public static class LanguageGuesser
         "ja" or "zh" => Script.Cjk,
         "ko" => Script.Hangul,
         "hi" or "mr" or "ne" => Script.Devanagari,
+        "el" => Script.Greek,
+        "he" or "iw" or "yi" => Script.Hebrew,
+        "th" => Script.Thai,
+        "bn" or "as" => Script.Bengali,
         _ => Script.Latin,
     };
 
@@ -45,6 +49,11 @@ public static class LanguageGuesser
         >= '؀' and <= 'ۿ' when char.IsLetter(c) => Script.Arabic,
         >= 'ݐ' and <= 'ݿ' or >= 'ﭐ' and <= '﷿' or >= 'ﹰ' and <= '﻿' => Script.Arabic,
         >= 'ऀ' and <= 'ॿ' when char.IsLetter(c) => Script.Devanagari,
+        >= 'ঀ' and <= '৿' when char.IsLetter(c) => Script.Bengali,
+        >= 'Ͱ' and <= 'Ͽ' when char.IsLetter(c) => Script.Greek,
+        >= 'ἀ' and <= '῿' when char.IsLetter(c) => Script.Greek,
+        >= 'א' and <= 'ת' => Script.Hebrew,
+        >= 'ก' and <= '๛' when char.IsLetter(c) => Script.Thai,
         >= '぀' and <= 'ヿ' or >= '㐀' and <= '䶿' or >= '一' and <= '鿿' => Script.Cjk,
         >= '豈' and <= '﫿' or >= 'ｦ' and <= 'ﾟ' => Script.Cjk,
         >= '가' and <= '힯' or >= 'ᄀ' and <= 'ᇿ' or >= '㄰' and <= '㆏' => Script.Hangul,
@@ -213,6 +222,38 @@ public static class LanguageGuesser
         ["nl"] = P("de het een en van is dat niet op te zijn met voor ik je wat er maar ook naar"),
         ["tr"] = P("ve bir bu da de için ile ne çok mi ama daha gibi olarak ben sen var yok",
             ("ğışİ", 3), ("çöü", 1)),
+        ["cs"] = P("je se na to že v a s z do jsem jak ale co tak jako pro by není jsou",
+            ("ěůř", 3), ("čšžýáíéúď", 1)),
+        ["sk"] = P("je sa na to že v a s z do som ako ale čo tak pre by nie sú aj",
+            ("ľĺŕôä", 3), ("čšžýáíéúďň", 1)),
+        ["ro"] = P("și în de la cu un o nu pe că este din pentru mai sunt care",
+            ("șțăȘȚ", 3), ("âî", 1.5)),
+        ["hu"] = P("a az és hogy nem is egy van meg de csak ez el már mint vagy",
+            ("őű", 3), ("áéíóöúü", 1)),
+        ["hr"] = P("je i u da se na za su od ne to sa kao što ali iz",
+            ("đ", 3), ("čćšž", 1)),
+        ["sv"] = P("och att det som en på är av för med till den inte har jag om ett",
+            ("å", 1.5), ("äö", 1)),
+        ["da"] = P("og at det en til er som på de med for ikke har jeg af den ved",
+            ("æø", 2), ("å", 1)),
+        ["nb"] = P("og at det en til er som på de med for ikke har jeg av den ved",
+            ("æø", 2), ("å", 1)),
+        ["fi"] = P("ja on ei se että hän oli ovat mutta kun tai niin myös kuin",
+            ("äö", 1.5)),
+        ["vi"] = P("và của là có không người được trong cho những một các này với",
+            ("ăđơư", 3), ("ạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ", 2)),
+        ["id"] = P("yang dan di ini itu dengan untuk tidak dari dalam akan pada ada saya anda"),
+        ["ms"] = P("yang dan di ini itu dengan untuk tidak dari dalam akan pada ada saya anda boleh"),
+
+        // ── Cyrillic ────────────────────────────────────────────────────────────────────
+        // Ukrainian and Bulgarian each lack letters Russian uses everywhere (ы, э), and have their
+        // own: і ї є ґ for Ukrainian, a much heavier ъ for Bulgarian.
+        ["ru"] = P("и в не на я что он с как это по но они все так его вы",
+            ("ыэё", 2)),
+        ["uk"] = P("і в не на я що він з як це та але вони все так його ви",
+            ("їєґі", 3)),
+        ["bg"] = P("и в не на е да се че от за с са как това по но",
+            ("ъ", 1.5)),
 
         // ── Arabic script ───────────────────────────────────────────────────────────────
         // Persian and Urdu add letters Arabic doesn't have (and swap in their own kaf and yeh);

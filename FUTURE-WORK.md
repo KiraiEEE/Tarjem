@@ -86,6 +86,30 @@ Shipped in 0.6 for the headword (`Services/PronunciationService.cs`). Still open
 speaker beside the *translated* word, for people learning the target language rather than the
 source. The service already takes any language code, so it is a button and a click handler.
 
+## Region overlay: matching the font weight
+
+Tried in 0.7 and taken out. The in-place overlay matches each line's colours and size, and it
+would be nice to keep bold labels bold. Two signals were measured on Segoe UI rendered at 12-23 px
+and read back through Windows OCR:
+
+| Signal | Regular | Semibold |
+|---|---|---|
+| Share of the box that differs from the background | 0.18 - 0.36 | 0.35 - 0.41 |
+| Mean horizontal stroke run / font size | 0.123 - 0.139 | 0.147 - 0.156 |
+
+The first mostly measures anti-aliasing and how tightly the box fits; the second is the right
+quantity but its margin is under a pixel at UI sizes. Either would guess wrong often enough to look
+worse than drawing everything in the regular weight. Worth revisiting only for large text (24 px and
+up), where stroke widths differ by a whole pixel or more.
+
+## Chinese word segmentation without a Chinese Windows language
+
+Alt+Q regroups Japanese characters into words with `Windows.Data.Text.WordsSegmenter`. For Chinese
+that class only has a real segmenter when a Chinese language is installed in Windows; otherwise it
+resolves to "und" and splits every character apart, so Tarjem skips it and looks up the single
+character (still translated in its sentence). A small bundled dictionary with forward maximum
+matching (~2 MB for the 100k most common words) would close the gap.
+
 ## Ideas not yet started
 
 - Arabic diacritics (tashkeel) toggle for learners.

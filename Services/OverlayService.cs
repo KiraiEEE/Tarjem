@@ -1,4 +1,6 @@
 using System.Windows;
+using Serilog;
+using Tarjem.Core.Language;
 using Tarjem.Models;
 using Tarjem.Views;
 
@@ -34,6 +36,22 @@ public class OverlayService
 
     public event EventHandler? Dismissed;
     public bool IsShowing => _popup != null;
+
+    /// <summary>Answers the word on show again in the languages now in Settings. Supplied by the
+    /// app (it is <see cref="LookupPipeline.RetranslateAsync"/>), so the popup's language chip can
+    /// work without this class owning the lookup.</summary>
+    public Func<TranslationResult, CancellationToken, Task<TranslationResult>>? RetranslateWord { get; set; }
+
+    /// <summary>Cancels a language-change re-translation that a newer one, or a dismissal, made stale.</summary>
+    private CancellationTokenSource? _relookupCts;
+
+    private CancellationToken BeginRelookup()
+    {
+        _relookupCts?.Cancel();
+        _relookupCts?.Dispose();
+        _relookupCts = new CancellationTokenSource();
+        return _relookupCts.Token;
+    }
 
     public OverlayService(SettingsService settingsService, TranslationService translationService)
     {
@@ -93,9 +111,8 @@ public class OverlayService
         if (Settings.ShowWordOverlayOnHighlight && _overlay != null && !string.IsNullOrWhiteSpace(result.ArabicWord))
             _overlay.ShowWordOverlay(result.ArabicWord, wordRectPhysical, TranslationService.IsRtlLanguage(result.TargetLanguage));
 
-        popup.DictionarySourceRequested = providerId => _translationService.LookupDictionaryAsync(providerId, result.OriginalWord, result.SourceLanguage);
-        popup.TranslationSourceRequested = providerId => _translationService.TranslateWithProviderAsync(providerId, result.OriginalWord, result.FullSentence, result.SourceLanguage);
-        popup.GeminiRequested = () => _translationService.RequestGeminiAsync(result.OriginalWord, result.FullSentence, result.SourceLanguage);
+        WireSourceSwitchers(popup, result);
+        popup.LanguagePicked += (_, pick) => _ = OnPopupLanguagePickedAsync(popup, wordRectPhysical, pick);
 
         popup.Show();
         popup.UpdateLayout();
@@ -103,6 +120,97 @@ public class OverlayService
         PositionPopup(popup, wordRectPhysical);
         popup.RefreshBackdrop();
         popup.AnimateIn();
+    }
+
+    /// <summary>The popup's own source switchers re-ask about the result on show - which after a
+    /// language change is the new one, so they are re-pointed every time it changes.</summary>
+    private void WireSourceSwitchers(PopupWindow popup, TranslationResult result)
+    {
+        popup.DictionarySourceRequested = providerId => _translationService.LookupDictionaryAsync(providerId, result.OriginalWord, result.SourceLanguage);
+        popup.TranslationSourceRequested = providerId => _translationService.TranslateWithProviderAsync(providerId, result.OriginalWord, result.FullSentence, result.SourceLanguage);
+        popup.GeminiRequested = () => _translationService.RequestGeminiAsync(result.OriginalWord, result.FullSentence, result.SourceLanguage);
+    }
+
+    /// <summary>
+    /// A language picked on the popup becomes the default and the same word is answered again in
+    /// place - the popup stays where it is, dims while it waits, and grows or shrinks to the new
+    /// answer.
+    /// </summary>
+    private async Task OnPopupLanguagePickedAsync(PopupWindow popup, WpfRect wordRectPhysical, LanguagePick pick)
+    {
+        if (popup.CurrentResult is not { } previous || RetranslateWord == null) return;
+        if (!LanguageChoice.Apply(_settingsService, pick)) return;
+
+        var ct = BeginRelookup();
+        popup.Options = Settings;
+        popup.SetBusy(true);
+
+        try
+        {
+            var result = await RetranslateWord(previous, ct);
+            if (ct.IsCancellationRequested || !ReferenceEquals(popup, _popup)) return;
+
+            WireSourceSwitchers(popup, result);
+            popup.SetTranslationResult(result,
+                string.IsNullOrEmpty(result.DefinitionProvider) ? Settings.DefaultDictionaryProvider : result.DefinitionProvider,
+                string.IsNullOrEmpty(result.TranslationProvider) ? Settings.DefaultTranslationProvider : result.TranslationProvider);
+            popup.SetBusy(false);
+            popup.UpdateLayout();
+            PositionPopup(popup, wordRectPhysical);
+            popup.RefreshBackdrop();
+
+            if (Settings.ShowWordOverlayOnHighlight && _overlay != null && !string.IsNullOrWhiteSpace(result.ArabicWord))
+                _overlay.ShowWordOverlay(result.ArabicWord, wordRectPhysical, TranslationService.IsRtlLanguage(result.TargetLanguage));
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Re-translating after a language change failed");
+            if (ReferenceEquals(popup, _popup)) popup.SetBusy(false);
+        }
+    }
+
+    /// <summary>The Alt+E card's language chip: the new languages become the default, and the
+    /// same term is asked about again - in the newly chosen Wikipedia, if the source changed.</summary>
+    private async Task OnExplainLanguagePickedAsync(ExplainWindow explain, WpfRect wordRectPhysical, LanguagePick pick)
+    {
+        if (!LanguageChoice.Apply(_settingsService, pick)) return;
+
+        var ct = BeginRelookup();
+        explain.Options = Settings;
+        var term = explain.Term;
+        var source = Settings.AutoDetectSourceLanguage
+            ? explain.CurrentSourceLanguage ?? Settings.SourceLanguage
+            : Settings.SourceLanguage;
+
+        explain.AnimateContentSwap(() =>
+        {
+            explain.ShowLoading(term, source);
+            explain.UpdateLayout();
+            PositionNearWord(explain, wordRectPhysical);
+            explain.RefreshBackdrop();
+        });
+
+        try
+        {
+            var result = await _translationService.ExplainAsync(term, source, ct)
+                         ?? new TranslationResult
+                         {
+                             OriginalWord = term,
+                             Meanings = [$"Nothing found for \u201C{term}\u201D in Wikipedia or Wikidata."],
+                             IsEncyclopedic = true,
+                             SourceLanguage = source,
+                             TargetLanguage = Settings.TargetLanguage,
+                         };
+
+            if (ct.IsCancellationRequested) return;
+            CompleteExplain(explain, result, wordRectPhysical);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Re-explaining after a language change failed");
+        }
     }
 
     /// <summary>Only the Glass style has any use for a screen snapshot, and it costs a full-monitor
@@ -163,7 +271,7 @@ public class OverlayService
     /// Shows the encyclopedia answer in its own window, immediately in a loading state so the
     /// keypress produces something on screen before the network round-trip finishes.
     /// </summary>
-    public ExplainWindow ShowExplainLoading(WpfRect wordRectPhysical, string word)
+    public ExplainWindow ShowExplainLoading(WpfRect wordRectPhysical, string word, string? sourceLanguage = null)
     {
         HideExplain();
 
@@ -179,7 +287,8 @@ public class OverlayService
         // and answering from a different one would make the switcher lie about where the answer
         // came from.
         explain.SourceRequested = providerId =>
-            _translationService.ExplainWithProviderAsync(providerId, word, Settings.SourceLanguage);
+            _translationService.ExplainWithProviderAsync(providerId, word, explain.CurrentSourceLanguage ?? Settings.SourceLanguage);
+        explain.LanguagePicked += (_, pick) => _ = OnExplainLanguagePickedAsync(explain, wordRectPhysical, pick);
 
         // The card changes size when the switcher swaps its content, so it has to be re-placed
         // and the Glass blur re-registered with whatever is now behind it.
@@ -189,7 +298,7 @@ public class OverlayService
             explain.RefreshBackdrop();
         };
 
-        explain.ShowLoading(word);
+        explain.ShowLoading(word, sourceLanguage);
         explain.Show();
         explain.UpdateLayout();
 
@@ -247,6 +356,7 @@ public class OverlayService
     {
         var hadSomething = _overlay != null || _popup != null || _explain != null || _closing.Count > 0;
 
+        _relookupCts?.Cancel();
         _escapeWatcher?.Dispose();
         _escapeWatcher = null;
 

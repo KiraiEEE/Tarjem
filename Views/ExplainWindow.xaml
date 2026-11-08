@@ -58,7 +58,7 @@
                              has five sources behind it now - two wikis and three models - and
                              which one answered matters more here than anywhere else in the app,
                              because a wiki entry and a model's recollection render identically. -->
-                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel x:Name="HeaderActions" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock x:Name="SourceChip"
                                        FontSize="10.5"
                                        Foreground="#FF8888AA"

@@ -210,7 +210,7 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <Grid Grid.Row="0">
+                        <Grid x:Name="TranslationHeaderRow" Grid.Row="0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
@@ -294,7 +294,7 @@
                         </Grid.RowDefinitions>
 
                         <!-- Header row -->
-                        <Grid Grid.Row="0">
+                        <Grid x:Name="DictionaryHeaderRow" Grid.Row="0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>

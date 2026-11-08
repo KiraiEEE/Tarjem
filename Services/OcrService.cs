@@ -20,9 +20,9 @@ public class OcrService
 {
     private readonly Dictionary<string, OcrEngine> _engines = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Factor <see cref="PreprocessForOcr"/> upscales by before recognition. Every
-    /// coordinate the engine reports is in that larger space and has to be divided back out.</summary>
-    private const int OcrUpscale = 2;
+    /// <summary>Factor <see cref="PreprocessForOcr"/> upscales by before recognition, by default.
+    /// Every coordinate the engine reports is in that larger space and has to be divided back out.</summary>
+    public const int DefaultUpscale = 2;
 
     /// <summary>The engine used when the requested language has no pack installed. English when
     /// there is one, otherwise whatever Windows can read.</summary>
@@ -71,6 +71,68 @@ public class OcrService
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Catalog codes of every language Windows can OCR on this machine right now, straight from
+    /// the recognizer list. Auto-detect used to find these by asking about each of the app's
+    /// languages in turn - which also meant a pack the app didn't list (Romanian, say) could be
+    /// installed and never used.
+    /// </summary>
+    public static IReadOnlyList<string> InstalledLanguages()
+    {
+        try
+        {
+            return OcrEngine.AvailableRecognizerLanguages
+                .Select(l => LanguageCatalog.Find(l.LanguageTag)?.Code)
+                .OfType<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Could not list the installed OCR languages");
+            return Array.Empty<string>();
+        }
+    }
+
+    private static readonly Dictionary<string, Windows.Data.Text.WordsSegmenter?> Segmenters = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The Windows word breaker, for languages written without spaces. Returns no tokens when
+    /// Windows has no real segmenter for the language (it then resolves to "und" and splits every
+    /// character apart, which is worse than not segmenting at all) - Japanese always has one;
+    /// Chinese has one when a Chinese language is installed in Windows.
+    /// </summary>
+    public static IReadOnlyList<(int Start, int Length)> Segment(string text, string languageTag)
+    {
+        Windows.Data.Text.WordsSegmenter? segmenter;
+        lock (Segmenters)
+        {
+            if (!Segmenters.TryGetValue(languageTag, out segmenter))
+            {
+                try
+                {
+                    var tag = LanguageCatalog.BaseTag(languageTag) == "zh"
+                        ? (languageTag.EndsWith("TW", StringComparison.OrdinalIgnoreCase) ? "zh-Hant" : "zh-Hans")
+                        : languageTag;
+                    var candidate = new Windows.Data.Text.WordsSegmenter(tag);
+                    segmenter = candidate.ResolvedLanguage == "und" ? null : candidate;
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(ex, "No word segmenter for {Language}", languageTag);
+                    segmenter = null;
+                }
+                Segmenters[languageTag] = segmenter;
+            }
+        }
+
+        if (segmenter == null || string.IsNullOrEmpty(text)) return Array.Empty<(int, int)>();
+
+        return segmenter.GetTokens(text)
+            .Select(t => ((int)t.SourceTextSegment.StartPosition, (int)t.SourceTextSegment.Length))
+            .ToList();
     }
 
     /// <summary>Builds and caches the engine for <paramref name="languageTag"/> ahead of time, so
@@ -145,12 +207,26 @@ public class OcrService
     /// <summary>Runs OCR with a single, known source language - the normal (fast) path. Falls
     /// back to English if the requested language's Windows OCR pack isn't installed, so a stale
     /// setting (e.g. after uninstalling a language pack) degrades instead of throwing.</summary>
-    public async Task<RecognizedText?> RecognizeTextAsync(Bitmap bitmap, string languageTag)
-    {
-        var engine = GetOrCreateEngine(languageTag) ?? _fallbackEngine;
+    public async Task<RecognizedText?> RecognizeTextAsync(Bitmap bitmap, string languageTag, int upscale = DefaultUpscale) =>
+        (await RecognizeWithLanguageAsync(bitmap, languageTag, upscale)).Text;
 
-        using var softwareBitmap = await PrepareSoftwareBitmapAsync(bitmap);
-        return Convert(await engine.RecognizeAsync(softwareBitmap));
+    /// <summary>As <see cref="RecognizeTextAsync"/>, also reporting which language's engine
+    /// actually read it. When the requested pack is missing that is the fallback's language, and
+    /// labelling English OCR output "Ukrainian" sent the translator the wrong source.</summary>
+    public async Task<(RecognizedText Text, string LanguageTag)> RecognizeWithLanguageAsync(
+        Bitmap bitmap, string languageTag, int upscale = DefaultUpscale)
+    {
+        var engine = GetOrCreateEngine(languageTag);
+        var usedTag = languageTag;
+        if (engine == null)
+        {
+            engine = _fallbackEngine;
+            usedTag = LanguageCatalog.Find(_fallbackEngine.RecognizerLanguage.LanguageTag)?.Code ?? "en";
+        }
+
+        var scale = EffectiveScale(bitmap, upscale);
+        using var softwareBitmap = await PrepareSoftwareBitmapAsync(bitmap, scale);
+        return (Convert(await engine.RecognizeAsync(softwareBitmap), scale), usedTag);
     }
 
     /// <summary>
@@ -158,7 +234,7 @@ public class OcrService
     /// Coordinates are halved here to undo the 2x upscale <see cref="PreprocessForOcr"/> applies,
     /// so callers never have to know it happened.
     /// </summary>
-    private static RecognizedText Convert(OcrResult result)
+    private static RecognizedText Convert(OcrResult result, double upscale)
     {
         var lines = new List<RecognizedLine>(result.Lines.Count);
 
@@ -174,7 +250,7 @@ public class OcrService
 
                 words.Add(new RecognizedWord(
                     word.Text,
-                    new TextRect(box.X / OcrUpscale, box.Y / OcrUpscale, box.Width / OcrUpscale, box.Height / OcrUpscale),
+                    new TextRect(box.X / upscale, box.Y / upscale, box.Width / upscale, box.Height / upscale),
                     lineIndex,
                     wordIndex));
             }
@@ -207,7 +283,8 @@ public class OcrService
         var available = candidateLanguageTags.Where(tag => GetOrCreateEngine(tag) != null).ToList();
         if (available.Count == 0) return null;
 
-        using var softwareBitmap = await PrepareSoftwareBitmapAsync(bitmap);
+        var scale = EffectiveScale(bitmap, DefaultUpscale);
+        using var softwareBitmap = await PrepareSoftwareBitmapAsync(bitmap, scale);
 
         var groups = available
             .GroupBy(LanguageGuesser.ScriptOf)
@@ -238,7 +315,7 @@ public class OcrService
             }
         }
 
-        return (Convert(result), languageTag);
+        return (Convert(result, scale), languageTag);
     }
 
     /// <summary>The language whose engine reads a script in the first pass: the user's own source
@@ -250,7 +327,17 @@ public class OcrService
         return members.FirstOrDefault(m => m == "en") ?? members[0];
     }
 
-    private static async Task<SoftwareBitmap> PrepareSoftwareBitmapAsync(Bitmap bitmap)
+    /// <summary>The upscale actually applied: the requested one, reduced as far as needed to keep
+    /// the image inside what Windows OCR accepts. A very wide region at 2x was refused outright and
+    /// came back as "no text found". Every coordinate is divided by this same number.</summary>
+    private static double EffectiveScale(Bitmap bitmap, double requested)
+    {
+        var longest = Math.Max(bitmap.Width, bitmap.Height);
+        if (longest <= 0) return requested;
+        return Math.Min(requested, (OcrEngine.MaxImageDimension - 2) / (double)longest);
+    }
+
+    private static async Task<SoftwareBitmap> PrepareSoftwareBitmapAsync(Bitmap bitmap, double upscale)
     {
         // The preprocessing below is a 2x upscale plus three full-frame passes over ~1.2M pixels,
         // one of them a 3x3 convolution in managed code. It used to run synchronously on whatever
@@ -258,7 +345,7 @@ public class OcrService
         // the dispatcher, was the UI thread, freezing the app for the duration of every lookup.
         var encoded = await Task.Run(() =>
         {
-            using var processed = PreprocessForOcr(bitmap);
+            using var processed = PreprocessForOcr(bitmap, upscale);
             using var buffer = new MemoryStream();
             processed.Save(buffer, ImageFormat.Bmp);
             return buffer.ToArray();
@@ -270,7 +357,7 @@ public class OcrService
         return await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
     }
 
-    private static Bitmap PreprocessForOcr(Bitmap source)
+    private static Bitmap PreprocessForOcr(Bitmap source, double upscale)
     {
         // Screen text is already crisp and high-contrast (unlike photographed
         // documents), so we avoid hard global-threshold binarization here: on
@@ -278,7 +365,7 @@ public class OcrService
         // blobs and is a major source of OCR misreads. A modest contrast boost
         // plus a light sharpen is enough for the Windows OCR engine to work well
         // while staying accurate across dark/light/colorful UI backgrounds.
-        var scaled = ScaleBitmap(source, OcrUpscale);
+        var scaled = ScaleBitmap(source, upscale);
         var grayscale = ToGrayscale(scaled);
         scaled.Dispose();
 
@@ -291,9 +378,12 @@ public class OcrService
         return sharpened;
     }
 
-    private static Bitmap ScaleBitmap(Bitmap source, int scale)
+    private static Bitmap ScaleBitmap(Bitmap source, double scale)
     {
-        var scaled = new Bitmap(source.Width * scale, source.Height * scale, PixelFormat.Format32bppArgb);
+        var scaled = new Bitmap(
+            Math.Max(1, (int)Math.Round(source.Width * scale)),
+            Math.Max(1, (int)Math.Round(source.Height * scale)),
+            PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(scaled);
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.DrawImage(source, 0, 0, scaled.Width, scaled.Height);

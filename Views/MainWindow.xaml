@@ -23,6 +23,11 @@
                        VerticalAlignment="Center"
                        RenderOptions.BitmapScalingMode="HighQuality"/>
                 <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding Detail}"
+                           Margin="8,0,0,0"
+                           FontSize="11.5"
+                           Opacity="0.6"
+                           VerticalAlignment="Center"/>
             </StackPanel>
         </DataTemplate>
 
@@ -960,8 +965,8 @@
                                         </ui:CardControl.Icon>
                                         <ui:CardControl.Header>
                                             <StackPanel>
-                                                <TextBlock Text="Source language (OCR)" FontWeight="Medium"/>
-                                                <TextBlock Text="Which language Tarjem reads off your screen. Needs that language's Windows OCR pack installed (Settings > Time &amp; language > Language)."
+                                                <TextBlock Text="Translate from" FontWeight="Medium"/>
+                                                <TextBlock Text="The language Tarjem reads off your screen. Auto-detect works it out on every lookup, among the languages Windows can read on this PC. You can also change this from the popup, the region overlay or the tray icon."
                                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                            FontSize="12"
                                                            TextWrapping="Wrap"
@@ -970,7 +975,8 @@
                                         </ui:CardControl.Header>
                                         <ComboBox x:Name="SourceLanguageCombo"
                                                   ItemTemplate="{StaticResource LanguageItemTemplate}"
-                                                  Width="170"
+                                                  MaxDropDownHeight="420"
+                                                  Width="250"
                                                   SelectionChanged="SourceLanguageCombo_SelectionChanged"/>
                                     </ui:CardControl>
 
@@ -982,7 +988,7 @@
                                                MaxWidth="600"
                                                Margin="4,-2,0,4"
                                                Visibility="Collapsed"
-                                               Text="This language's Windows OCR pack doesn't seem to be installed - lookups will fall back to English until you install it (Settings > Time &amp; language > Language, then 'Add a language')."/>
+                                               Text="Windows can't read this language yet: its OCR pack isn't installed, so lookups fall back to another language until it is. Add it in Windows Settings > Time &amp; language > Language &amp; region."/>
 
                                     <TextBlock x:Name="SourceLanguageNoteText"
                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
@@ -995,29 +1001,12 @@
 
                                     <ui:CardControl Margin="0,0,0,8">
                                         <ui:CardControl.Icon>
-                                            <ui:SymbolIcon Symbol="Search24"/>
-                                        </ui:CardControl.Icon>
-                                        <ui:CardControl.Header>
-                                            <StackPanel>
-                                                <TextBlock Text="Auto-detect source language" FontWeight="Medium"/>
-                                                <TextBlock Text="Try every installed OCR language on each lookup and keep whichever recognized the most text, instead of assuming the language above. Slower per-lookup since it runs multiple OCR passes."
-                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                                           FontSize="12"
-                                                           TextWrapping="Wrap"
-                                                           Margin="0,2,0,0"/>
-                                            </StackPanel>
-                                        </ui:CardControl.Header>
-                                        <ui:ToggleSwitch x:Name="AutoDetectSourceLanguageToggle" Checked="AutoDetectSourceLanguageToggle_Changed" Unchecked="AutoDetectSourceLanguageToggle_Changed"/>
-                                    </ui:CardControl>
-
-                                    <ui:CardControl Margin="0,0,0,8">
-                                        <ui:CardControl.Icon>
                                             <ui:SymbolIcon Symbol="Globe24"/>
                                         </ui:CardControl.Icon>
                                         <ui:CardControl.Header>
                                             <StackPanel>
-                                                <TextBlock Text="Translation language" FontWeight="Medium"/>
-                                                <TextBlock Text="Which language words get translated into."
+                                                <TextBlock Text="Translate to" FontWeight="Medium"/>
+                                                <TextBlock Text="The language every translation is written in."
                                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                            FontSize="12"
                                                            TextWrapping="Wrap"
@@ -1026,7 +1015,8 @@
                                         </ui:CardControl.Header>
                                         <ComboBox x:Name="TargetLanguageCombo"
                                                   ItemTemplate="{StaticResource LanguageItemTemplate}"
-                                                  Width="170"
+                                                  MaxDropDownHeight="420"
+                                                  Width="250"
                                                   SelectionChanged="TargetLanguageCombo_SelectionChanged"/>
                                     </ui:CardControl>
 
@@ -1499,12 +1489,33 @@
 
                                     <ui:CardControl Margin="0,0,0,8">
                                         <ui:CardControl.Icon>
+                                            <ui:SymbolIcon Symbol="SlideTextMultiple24"/>
+                                        </ui:CardControl.Icon>
+                                        <ui:CardControl.Header>
+                                            <StackPanel>
+                                                <TextBlock Text="Style" FontWeight="Medium"/>
+                                                <TextBlock Text="In place redraws each line where it was, in its own colours and size, so the screen reads as if it were written in your language. Panel puts the whole translation on one dark card over the selection, which is easier to read over busy or moving backgrounds."
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </ui:CardControl.Header>
+                                        <ComboBox x:Name="RegionDisplayModeCombo"
+                                                  Width="170">
+                                            <ComboBoxItem Content="In place" Tag="InPlace" IsSelected="True"/>
+                                            <ComboBoxItem Content="Panel" Tag="Panel"/>
+                                        </ComboBox>
+                                    </ui:CardControl>
+
+                                    <ui:CardControl Margin="0,0,0,8">
+                                        <ui:CardControl.Icon>
                                             <ui:SymbolIcon Symbol="TextFontSize24"/>
                                         </ui:CardControl.Icon>
                                         <ui:CardControl.Header>
                                             <StackPanel>
                                                 <TextBlock Text="Translated text size" FontWeight="Medium"/>
-                                                <TextBlock Text="Match original reads the size of the text it just replaced, so the translation blends into the app. Fill region makes it as large as the selection allows."
+                                                <TextBlock Text="Panel style. Match original uses the size of the text it replaced, so the translation blends into the app. Fill region makes it as large as the selection allows."
                                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                            FontSize="12"
                                                            TextWrapping="Wrap"
@@ -1526,7 +1537,7 @@
                                         <ui:CardControl.Header>
                                             <StackPanel>
                                                 <TextBlock Text="Show original text" FontWeight="Medium"/>
-                                                <TextBlock Text="Show the text that was recognized above the translation, in smaller muted type"
+                                                <TextBlock Text="Panel style. Shows the recognized text above the translation, in smaller muted type. In place, the eye button on the overlay shows the original instead."
                                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                            FontSize="12"
                                                            TextWrapping="Wrap"
@@ -1543,7 +1554,7 @@
                                         <ui:CardControl.Header>
                                             <StackPanel>
                                                 <TextBlock Text="Match the scene" FontWeight="Medium"/>
-                                                <TextBlock Text="Tints the overlay with colors taken from whatever is behind it, so translated text sits inside the game's own look instead of on a card dropped on top of it."
+                                                <TextBlock Text="Panel style. Tints the card with colours taken from whatever is behind it, so it sits inside the game's own look. In place always uses the original colours."
                                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                            FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
                                             </StackPanel>

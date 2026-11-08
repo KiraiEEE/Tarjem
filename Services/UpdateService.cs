@@ -18,8 +18,8 @@ public sealed record AvailableUpdate(string Version, string Url);
 /// </summary>
 public sealed class UpdateService
 {
-    private const string LatestReleaseApi = "https://api.github.com/repos/IdleBuilt/Tarjem/releases/latest";
-    private const string ReleasesPage = "https://github.com/IdleBuilt/Tarjem/releases/latest";
+    private const string LatestReleaseApi = "https://api.github.com/repos/KiraiEEE/Tarjem/releases/latest";
+    private const string ReleasesPage = "https://github.com/KiraiEEE/Tarjem/releases/latest";
 
     private readonly HttpClient _http;
 

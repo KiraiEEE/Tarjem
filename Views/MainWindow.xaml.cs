@@ -111,6 +111,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _binder = new SettingsBinder(_settings);
         _binder.Changed += (_, _) => OnBoundSettingChanged();
 
+        _settings.Changed += OnSettingsChangedElsewhere;
+        Closed += (_, _) => _settings.Changed -= OnSettingsChangedElsewhere;
+
         _binder.Load(() =>
         {
             LoadHistory();
@@ -153,6 +156,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _binder.Bind(PopupStyleComboBox, s => s.PopupVisualStyle, (s, v) => s.PopupVisualStyle = v);
         _binder.Bind(RegionFontSizeModeCombo, s => s.RegionFontSizeMode, (s, v) => s.RegionFontSizeMode = v);
+        _binder.Bind(RegionDisplayModeCombo, s => s.RegionDisplayMode, (s, v) => s.RegionDisplayMode = v);
 
         _binder.Fill(RegionTranslationProviderCombo, TranslationService.RegionTranslationSources, _settings.Current.RegionTranslationProvider);
         _binder.Bind(RegionTranslationProviderCombo, s => s.RegionTranslationProvider, (s, v) => s.RegionTranslationProvider = v);
@@ -216,6 +220,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         SettingsBinder.Select(ThemeCombo, s.Theme);
         SettingsBinder.Select(PopupStyleComboBox, s.PopupVisualStyle);
         SettingsBinder.Select(RegionFontSizeModeCombo, s.RegionFontSizeMode);
+        SettingsBinder.Select(RegionDisplayModeCombo, s.RegionDisplayMode);
         SettingsBinder.Select(RegionTranslationProviderCombo, s.RegionTranslationProvider);
         SettingsBinder.Select(ExplainAnswerLengthCombo, s.ExplainAnswerLength);
     }
@@ -1125,17 +1130,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_isLoading) return;
         if (TargetLanguageCombo.SelectedItem is LanguageOption language)
-        {
-            _settings.Current.TargetLanguage = language.Code;
-            _settings.Save();
-        }
+            ApplyLanguagePick(new LanguagePick(null, language.Code));
     }
 
     private void LoadSourceLanguageSettings()
     {
-        SourceLanguageCombo.ItemsSource = LanguageFlags.Sources();
-        SelectLanguage(SourceLanguageCombo, _settings.Current.SourceLanguage);
-        AutoDetectSourceLanguageToggle.IsChecked = _settings.Current.AutoDetectSourceLanguage;
+        SourceLanguageCombo.ItemsSource = LanguageFlags.Sources(includeAuto: true);
+        SelectLanguage(SourceLanguageCombo,
+            _settings.Current.AutoDetectSourceLanguage ? Tarjem.Core.Language.LanguageCatalog.Auto : _settings.Current.SourceLanguage);
         UpdateLanguageDependentState();
     }
 
@@ -1144,18 +1146,52 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (_isLoading) return;
         if (SourceLanguageCombo.SelectedItem is LanguageOption language)
         {
-            _settings.Current.SourceLanguage = language.Code;
-            _settings.Save();
+            ApplyLanguagePick(new LanguagePick(language.Code, null));
             UpdateLanguageDependentState();
         }
     }
 
-    private void AutoDetectSourceLanguageToggle_Changed(object sender, RoutedEventArgs e)
+    /// <summary>Same path as every other language picker in the app, so "Auto-detect" and the
+    /// recent-languages list mean the same thing here as on the popup.</summary>
+    private void ApplyLanguagePick(LanguagePick pick)
     {
-        if (_isLoading) return;
-        _settings.Current.AutoDetectSourceLanguage = AutoDetectSourceLanguageToggle.IsChecked == true;
-        _settings.Save();
-        UpdateLanguageDependentState();
+        _applyingOwnLanguagePick = true;
+        try { LanguageChoice.Apply(_settings, pick); }
+        finally { _applyingOwnLanguagePick = false; }
+    }
+
+    private bool _applyingOwnLanguagePick;
+
+    /// <summary>A language changed somewhere else - the popup's chip, the overlay, the tray menu -
+    /// while this window was open. Show it, rather than leave a stale choice on screen that the next
+    /// unrelated click here would quietly write back.</summary>
+    private void OnSettingsChangedElsewhere(object? sender, EventArgs e)
+    {
+        if (_applyingOwnLanguagePick) return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!IsLoaded) return;
+
+            var s = _settings.Current;
+            var source = s.AutoDetectSourceLanguage ? Tarjem.Core.Language.LanguageCatalog.Auto : s.SourceLanguage;
+            if ((SourceLanguageCombo.SelectedItem as LanguageOption)?.Code == source &&
+                (TargetLanguageCombo.SelectedItem as LanguageOption)?.Code == s.TargetLanguage)
+                return;
+
+            var wasLoading = _isLoading;
+            _isLoading = true;
+            try
+            {
+                SelectLanguage(SourceLanguageCombo, source);
+                SelectLanguage(TargetLanguageCombo, s.TargetLanguage);
+                UpdateLanguageDependentState();
+            }
+            finally
+            {
+                _isLoading = wasLoading;
+            }
+        });
     }
 
     /// <summary>
@@ -1172,14 +1208,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     /// </summary>
     private void UpdateLanguageDependentState()
     {
-        var autoDetect = AutoDetectSourceLanguageToggle.IsChecked == true;
-        var sourceCode = (SourceLanguageCombo.SelectedItem as LanguageOption)?.Code ?? "en";
-        var nonEnglishSource = !autoDetect && sourceCode != "en";
+        var selected = (SourceLanguageCombo.SelectedItem as LanguageOption)?.Code ?? "en";
+        var autoDetect = selected == Tarjem.Core.Language.LanguageCatalog.Auto;
+        var sourceCode = autoDetect ? _settings.Current.SourceLanguage : selected;
 
-        SourceLanguageCombo.IsEnabled = !autoDetect;
-        SourceLanguageNoteText.Visibility = nonEnglishSource ? Visibility.Visible : Visibility.Collapsed;
+        // The old note claimed other languages "fall back to Gemini only for definitions", which
+        // stopped being true when the free dictionaries gained 17 languages. The coverage note
+        // under the definition source picker says what is actually true, from the catalog.
+        SourceLanguageNoteText.Visibility = Visibility.Collapsed;
 
-        SourceLanguagePackMissingText.Visibility = nonEnglishSource && !OcrService.IsWindowsLanguagePackInstalled(sourceCode)
+        SourceLanguagePackMissingText.Visibility = !autoDetect && !OcrService.IsWindowsLanguagePackInstalled(sourceCode)
             ? Visibility.Visible
             : Visibility.Collapsed;
 

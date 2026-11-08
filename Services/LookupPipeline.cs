@@ -46,13 +46,29 @@ public sealed class LookupPipeline
     /// Everything up to (but not including) asking a provider: capture, recognize, pick the word.
     /// Split out so a caller can put something on screen while the network call is still running.
     /// </summary>
-    public sealed record WordPeek(WordMatch Match, string LanguageTag, WpfRect WordRectPhysical)
+    /// <param name="SourceIsGuess">The language was detected rather than set by the user, so the
+    /// translator may overrule it.</param>
+    public sealed record WordPeek(WordMatch Match, string LanguageTag, WpfRect WordRectPhysical, bool SourceIsGuess = false)
     {
         public bool Found => Match.Found;
 
         /// <summary>The raw token, punctuation trimmed - what Alt+E asks about.</summary>
-        public string Word => Match.Word?.Text.Trim().Trim('.', ',', ';', ':', '!', '?', '"', '\'', '(', ')', '[', ']') ?? "";
+        public string Word => Match.Word?.Text.Trim().Trim(TrimmedPunctuation) ?? "";
     }
+
+    private static readonly char[] TrimmedPunctuation =
+    [
+        '.', ',', ';', ':', '!', '?', '"', '\'', '(', ')', '[', ']', '{', '}', '<', '>',
+        '\u201C', '\u201D', '\u2018', '\u2019', '\u00AB', '\u00BB', '\u2026',
+        '\u060C', '\u061F', '\u061B', '\u06D4',                 // Arabic comma, question mark, semicolon, full stop
+        '\u3002', '\u3001', '\u300C', '\u300D', '\u300E', '\u300F', '\uFF01', '\uFF1F', '\uFF0C', '\uFF08', '\uFF09', // CJK
+    ];
+
+    /// <summary>Area searched again, at a higher upscale, when the first pass found nothing under
+    /// the cursor. Physical pixels; small enough that 3x stays quick.</summary>
+    private const int CloseUpWidth = 420;
+    private const int CloseUpHeight = 140;
+    private const int CloseUpScale = 3;
 
     /// <summary>Finds the word under the cursor without asking any provider about it.</summary>
     public async Task<WordPeek?> PeekWordAsync(Point cursorPosition, CancellationToken ct)
@@ -67,27 +83,45 @@ public sealed class LookupPipeline
             ct.ThrowIfCancellationRequested();
 
 
+            var cursorX = cursorPosition.X - offsetX;
+            var cursorY = cursorPosition.Y - offsetY;
+
             var recognized = await RecognizeAsync(bitmap, settings, ct);
-            if (recognized == null) return null;
+            var match = WordMatch.None;
+            var languageTag = settings.SourceLanguage;
+            double matchOffsetX = 0, matchOffsetY = 0;
 
-            var (text, languageTag) = recognized.Value;
-            if (text.IsEmpty) return null;
+            if (recognized is { Text.IsEmpty: false } found)
+            {
+                languageTag = found.LanguageTag;
+                match = await MatchAsync(found.Text, cursorX, cursorY, languageTag, ct);
+            }
 
-            // Word matching walks the bundled 47k frequency list for anything it doesn't
-            // recognize - far too much work to do on the dispatcher thread.
-            var match = await Task.Run(
-                () => WordMatcher.FindBestWord(text, cursorPosition.X - offsetX, cursorPosition.Y - offsetY, languageTag),
-                ct);
+            // Nothing under the cursor. The usual reason is text too small for the engine at 2x -
+            // game HUDs, dense tables, 9px UI labels - so look again, closer: a small crop around
+            // the cursor at a higher upscale. It costs one quick extra pass only on presses that
+            // would otherwise have done nothing at all.
+            if (!match.Found)
+            {
+                var closeUp = await CloseUpAsync(bitmap, cursorX, cursorY, languageTag, ct);
+                if (closeUp is { } c)
+                {
+                    match = c.Match;
+                    matchOffsetX = c.OffsetX;
+                    matchOffsetY = c.OffsetY;
+                    Log.Debug("Close-up pass found {Word} after the first pass found nothing", match.Target);
+                }
+            }
 
             if (!match.Found) return null;
 
             var wordRect = new WpfRect(
-                offsetX + match.Word!.Bounds.X,
-                offsetY + match.Word.Bounds.Y,
+                offsetX + matchOffsetX + match.Word!.Bounds.X,
+                offsetY + matchOffsetY + match.Word.Bounds.Y,
                 match.Word.Bounds.Width,
                 match.Word.Bounds.Height);
 
-            return new WordPeek(match, languageTag, wordRect);
+            return new WordPeek(match, languageTag, wordRect, settings.AutoDetectSourceLanguage);
         }
         finally
         {
@@ -109,7 +143,7 @@ public sealed class LookupPipeline
 
         var result = mode == LookupMode.Explain
             ? await ExplainAsync(peek, ct)
-            : await TranslateAsync(peek.Match, peek.LanguageTag, ct);
+            : await TranslateAsync(peek.Match, peek.LanguageTag, peek.SourceIsGuess, ct);
 
         ct.ThrowIfCancellationRequested();
 
@@ -121,22 +155,72 @@ public sealed class LookupPipeline
         return new LookupOutcome(result, peek.WordRectPhysical);
     }
 
+    /// <summary>Word matching walks the bundled 47k frequency list for anything it doesn't
+    /// recognize - far too much work to do on the dispatcher thread.</summary>
+    private static Task<WordMatch> MatchAsync(RecognizedText text, double x, double y, string languageTag, CancellationToken ct) =>
+        Task.Run(() => WordMatcher.FindBestWord(text, x, y, languageTag, OcrService.Segment), ct);
+
+    private async Task<(WordMatch Match, double OffsetX, double OffsetY)?> CloseUpAsync(
+        Bitmap capture, double cursorX, double cursorY, string languageTag, CancellationToken ct)
+    {
+        var width = Math.Min(CloseUpWidth, capture.Width);
+        var height = Math.Min(CloseUpHeight, capture.Height);
+        var left = (int)Math.Clamp(cursorX - width / 2.0, 0, capture.Width - width);
+        var top = (int)Math.Clamp(cursorY - height / 2.0, 0, capture.Height - height);
+
+        using var crop = capture.Clone(new Rectangle(left, top, width, height), capture.PixelFormat);
+        var (text, usedTag) = await _ocr.RecognizeWithLanguageAsync(crop, languageTag, CloseUpScale);
+        ct.ThrowIfCancellationRequested();
+        if (text.IsEmpty) return null;
+
+        var match = await MatchAsync(text, cursorX - left, cursorY - top, usedTag, ct);
+        return match.Found ? (match, left, top) : null;
+    }
+
+    /// <summary>
+    /// Re-answers a finished lookup after the user changed language from the popup itself: same
+    /// word, same sentence, the languages now in Settings. The screen is not read again - the dim
+    /// and the popup are on top of it - so a change of <em>script</em> needs a fresh press, but a
+    /// change of target, or of source within a script, is answered in place.
+    /// </summary>
+    public async Task<TranslationResult> RetranslateAsync(TranslationResult previous, CancellationToken ct)
+    {
+        var settings = _settings.Current;
+        var guess = settings.AutoDetectSourceLanguage;
+        var source = guess ? previous.SourceLanguage : settings.SourceLanguage;
+
+        var scope = CacheScope(previous.FullSentence, source);
+        if (_history.GetCached(scope + previous.OriginalWord) is { } cached)
+            return cached;
+
+        var result = await _translation.TranslateWord(previous.OriginalWord, previous.FullSentence, source, ct,
+            sourceIsGuess: guess);
+        ct.ThrowIfCancellationRequested();
+
+        _history.CacheResult(scope + result.OriginalWord, result);
+
+        // A new target language is a new vocabulary entry; the same target with a corrected source
+        // is the same entry, and counting it as a second lookup would inflate "most looked up".
+        if (settings.HistoryEnabled && result.TargetLanguage != previous.TargetLanguage)
+            _history.Add(result);
+
+        return result;
+    }
+
     private async Task<(RecognizedText Text, string LanguageTag)?> RecognizeAsync(
         Bitmap bitmap, AppSettings settings, CancellationToken ct)
     {
         if (!settings.AutoDetectSourceLanguage)
         {
-            var text = await _ocr.RecognizeTextAsync(bitmap, settings.SourceLanguage);
+            var (text, usedTag) = await _ocr.RecognizeWithLanguageAsync(bitmap, settings.SourceLanguage);
             ct.ThrowIfCancellationRequested();
-            return text == null ? null : (text, settings.SourceLanguage);
+            return (text, usedTag);
         }
 
-        // Only race languages that actually have a Windows OCR pack installed - trying all 18
-        // regardless would be needlessly slow and most would fail to create an engine anyway.
-        var candidates = TranslationService.SourceLanguages
-            .Select(l => l.Code)
-            .Where(_ocr.IsLanguageAvailable)
-            .ToList();
+        // Only the languages Windows can actually read here - one engine per script among them.
+        var candidates = OcrService.InstalledLanguages();
+        if (candidates.Count == 0)
+            candidates = [settings.SourceLanguage];
 
         var detected = await _ocr.DetectAndRecognizeAsync(bitmap, candidates, settings.SourceLanguage, ct);
         ct.ThrowIfCancellationRequested();
@@ -147,7 +231,7 @@ public sealed class LookupPipeline
     /// <summary>The Alt+Q path, with the in-memory cache in front of it. That cache is a speed
     /// optimization rather than a record, so it stays on even with history off - "history off"
     /// means nothing is written to disk.</summary>
-    private async Task<TranslationResult?> TranslateAsync(WordMatch match, string languageTag, CancellationToken ct)
+    private async Task<TranslationResult?> TranslateAsync(WordMatch match, string languageTag, bool sourceIsGuess, CancellationToken ct)
     {
         // Both spellings, because which one the lookup will settle on isn't known until it runs -
         // and the cache is keyed on the answer, not on the guess.
@@ -159,7 +243,7 @@ public sealed class LookupPipeline
         if (_history.GetCached(scope + match.Target) is { } cached)
             return cached;
 
-        var result = await _translation.TranslateWord(match.Target, match.Context, languageTag, ct, match.Raw);
+        var result = await _translation.TranslateWord(match.Target, match.Context, languageTag, ct, match.Raw, sourceIsGuess);
 
         // Keyed on the word actually answered about. Keying it on the correction meant a confirmed
         // reading of "governorate" was filed under "governor", and the next hover on "governor"

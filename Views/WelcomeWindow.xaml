@@ -24,6 +24,11 @@
                        VerticalAlignment="Center"
                        RenderOptions.BitmapScalingMode="HighQuality"/>
                 <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding Detail}"
+                           Margin="8,0,0,0"
+                           FontSize="11.5"
+                           Opacity="0.6"
+                           VerticalAlignment="Center"/>
             </StackPanel>
         </DataTemplate>
 

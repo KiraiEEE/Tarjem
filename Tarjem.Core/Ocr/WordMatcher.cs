@@ -42,7 +42,12 @@ public static class WordMatcher
     /// <param name="languageTag">Source language. Spelling correction only runs for English -
     /// there is no equivalent word list for the others, so correcting them would just be
     /// comparing foreign text against English words and "fixing" it wrong.</param>
-    public static WordMatch FindBestWord(RecognizedText text, double cursorX, double cursorY, string languageTag = "en")
+    /// <param name="segment">Splits a run of text written without spaces into words, returning
+    /// each word's start and length - the Windows word breaker, in the app. Optional, because the
+    /// core library can't reach it and the tests don't need it; without one, Japanese and Chinese
+    /// fall back to whatever unit the OCR engine reported, which is often a single character.</param>
+    public static WordMatch FindBestWord(RecognizedText text, double cursorX, double cursorY, string languageTag = "en",
+        WordSegmenter? segment = null)
     {
         if (text.IsEmpty) return WordMatch.None;
 
@@ -52,7 +57,16 @@ public static class WordMatcher
         // Split-word merging can produce a synthesized word that isn't in text.Words. The visual
         // line lookup below matches by identity, so it has to be given the original.
         var anchor = hit;
-        var (word, raw) = MergeSplitNeighbours(text, hit, cursorX);
+        var isEnglish = languageTag.StartsWith("en", StringComparison.OrdinalIgnoreCase);
+
+        // Rejoining "Envo" + "ys" is checked against the English word list, so it only means
+        // anything for English. Run on French it merged real words that happened to spell an
+        // English one.
+        var (word, raw) = isEnglish
+            ? MergeSplitNeighbours(text, hit, cursorX)
+            : segment != null && IsUnspacedLanguage(languageTag)
+                ? SegmentUnspaced(text, hit, cursorX, languageTag, segment)
+                : (hit, hit.Text);
 
         var context = BuildContext(text, anchor);
         var target = CorrectIfEnglish(raw, text.LineTextAt(word.LineIndex), word, cursorX, languageTag);
@@ -268,11 +282,11 @@ public static class WordMatcher
 
     private static string CorrectIfEnglish(string raw, string fullLine, RecognizedWord word, double cursorX, string languageTag)
     {
+        if (!languageTag.StartsWith("en", StringComparison.OrdinalIgnoreCase))
+            return new string(raw.Where(c => IsWordChar(c) || char.IsWhiteSpace(c)).ToArray()).Trim();
+
         if (LooksAlreadyCorrect(raw))
             return LettersOnly(raw) is { Length: > 0 } clean ? clean : raw;
-
-        if (!languageTag.StartsWith("en", StringComparison.OrdinalIgnoreCase))
-            return new string(raw.Where(c => char.IsLetter(c) || char.IsWhiteSpace(c)).ToArray()).Trim();
 
         return Correct(raw, fullLine, word, cursorX);
     }
@@ -385,5 +399,88 @@ public static class WordMatcher
         return clean.Length == 0 || EnglishWordList.IsRealWord(clean);
     }
 
-    private static string LettersOnly(string value) => new(value.Where(char.IsLetter).ToArray());
+    /// <summary>
+    /// The letters of a token, with the marks that belong to them. "Letters only" used to mean
+    /// <see cref="char.IsLetter(char)"/>, which is false for combining marks - so Hindi हिंदी
+    /// lost its vowel signs, and Arabic its shadda. Those are not punctuation; a word without them
+    /// is a different word or no word at all.
+    /// </summary>
+    public static string LettersOnly(string value) => new(value.Where(IsWordChar).ToArray());
+
+    public static bool IsWordChar(char c) =>
+        char.IsLetter(c) || char.GetUnicodeCategory(c) is
+            System.Globalization.UnicodeCategory.NonSpacingMark or
+            System.Globalization.UnicodeCategory.SpacingCombiningMark or
+            System.Globalization.UnicodeCategory.EnclosingMark;
+
+    // ── Unspaced scripts ──
+
+    /// <summary>Languages written without spaces between words, where the OCR engine's "word" is
+    /// usually one character and has to be regrouped into a real word before it's looked up.</summary>
+    public static bool IsUnspacedLanguage(string languageTag) =>
+        LanguageCatalog.BaseTag(languageTag) is "ja" or "zh" or "th";
+
+    /// <summary>
+    /// Regroups the characters around the cursor into the word the segmenter says they form. The
+    /// line is rebuilt from the engine's words with no separators, so a character offset in it maps
+    /// straight back to the word box it came from; the matched word's box is the union of the boxes
+    /// it covers, trimmed proportionally where the word starts or ends partway through one.
+    /// </summary>
+    private static (RecognizedWord Word, string Raw) SegmentUnspaced(
+        RecognizedText text, RecognizedWord hit, double cursorX, string languageTag, WordSegmenter segment)
+    {
+        var line = text.Lines[hit.LineIndex].Words;
+        if (line.Count == 0 || hit.WordIndex < 0 || hit.WordIndex >= line.Count) return (hit, hit.Text);
+
+        var starts = new int[line.Count];
+        var builder = new System.Text.StringBuilder();
+        for (var i = 0; i < line.Count; i++)
+        {
+            starts[i] = builder.Length;
+            builder.Append(line[i].Text);
+        }
+        var joined = builder.ToString();
+
+        var hitStart = starts[hit.WordIndex];
+        var hitLength = Math.Max(1, hit.Text.Length);
+        var relative = hit.Bounds.Width > 0 ? Math.Clamp((cursorX - hit.Bounds.X) / hit.Bounds.Width, 0, 0.999) : 0;
+        var pointed = hitStart + (int)(relative * hitLength);
+
+        IReadOnlyList<(int Start, int Length)> tokens;
+        try { tokens = segment(joined, languageTag); }
+        catch { return (hit, hit.Text); }
+
+        var token = tokens.FirstOrDefault(t => pointed >= t.Start && pointed < t.Start + t.Length);
+        if (token.Length <= 0 || token.Start + token.Length > joined.Length ||
+            !joined.Substring(token.Start, token.Length).Any(IsWordChar))
+            return (hit, hit.Text);
+
+        var tokenEnd = token.Start + token.Length;
+        double left = double.MaxValue, right = double.MinValue, top = double.MaxValue, bottom = double.MinValue;
+        var firstIndex = -1;
+
+        for (var i = 0; i < line.Count; i++)
+        {
+            var wordStart = starts[i];
+            var wordEnd = wordStart + line[i].Text.Length;
+            if (wordEnd <= token.Start || wordStart >= tokenEnd || line[i].Text.Length == 0) continue;
+
+            if (firstIndex < 0) firstIndex = i;
+            var b = line[i].Bounds;
+            var perChar = b.Width / line[i].Text.Length;
+            left = Math.Min(left, b.X + perChar * Math.Max(0, token.Start - wordStart));
+            right = Math.Max(right, b.Right - perChar * Math.Max(0, wordEnd - tokenEnd));
+            top = Math.Min(top, b.Y);
+            bottom = Math.Max(bottom, b.Bottom);
+        }
+
+        if (firstIndex < 0 || right <= left) return (hit, hit.Text);
+
+        var word = joined.Substring(token.Start, token.Length);
+        return (new RecognizedWord(word, new TextRect(left, top, right - left, bottom - top), hit.LineIndex, firstIndex), word);
+    }
 }
+
+/// <summary>Splits <c>text</c> (in the language <c>languageTag</c>) into words, as start/length
+/// pairs over the original string.</summary>
+public delegate IReadOnlyList<(int Start, int Length)> WordSegmenter(string text, string languageTag);

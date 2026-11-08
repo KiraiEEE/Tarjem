@@ -1,5 +1,6 @@
 using System.Windows;
 using Serilog;
+using Tarjem.Core.Language;
 using Tarjem.Views;
 
 namespace Tarjem.Services;
@@ -106,25 +107,13 @@ public sealed class SelectionTranslationService : IDisposable
 
         var text = _pendingText;
 
+        // A new copy is a new piece of text; a source fixed for the last one says nothing about it.
+        _userFixedSource = false;
+
         try
         {
             ShowOverlay(text);
-
-            var provider = _settings.Current.DefaultTranslationProvider;
-            var translated = await _translation.TranslateTextWithFailoverAsync(
-                provider, text, _settings.Current.SourceLanguage, cts.Token);
-
-            if (cts.IsCancellationRequested || _overlay == null) return;
-
-            var targetCode = _settings.Current.TargetLanguage;
-            _overlay.SetProviders(TranslationService.TranslationProviders, provider);
-            _overlay.SetTranslation(
-                text,
-                string.IsNullOrWhiteSpace(translated) ? text : translated,
-                TranslationService.IsRtlLanguage(targetCode),
-                ocrLineCount: 1,
-                sourceFontSizePhysical: 0,
-                sourceIsRtl: TranslationService.IsRtlLanguage(_settings.Current.SourceLanguage));
+            await TranslateIntoOverlayAsync(text, _settings.Current.DefaultTranslationProvider, cts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -134,6 +123,67 @@ public sealed class SelectionTranslationService : IDisposable
         {
             Log.Warning(ex, "Copied-text translation failed");
             CloseOverlay();
+        }
+    }
+
+    /// <summary>The language the copied text was found to be in, for the chip and for swapping.</summary>
+    private string _detectedSource = "en";
+
+    /// <summary>
+    /// Copied text has no OCR behind it, so there is nothing to have guessed the language from -
+    /// it used to be sent as whatever language OCR was set to read, which made copying a French
+    /// sentence while reading English games come back untranslated. Unless the user has fixed a
+    /// source language, the translator detects it.
+    /// </summary>
+    private async Task TranslateIntoOverlayAsync(string text, string provider, CancellationToken ct)
+    {
+        var settings = _settings.Current;
+        var source = settings.AutoDetectSourceLanguage ? _detectedSource : settings.SourceLanguage;
+        var detect = settings.AutoDetectSourceLanguage || !_userFixedSource;
+
+        var translated = await _translation.TranslateBlockAsync(provider, text, source, detect, ct);
+        if (ct.IsCancellationRequested || _overlay == null) return;
+
+        if (translated?.DetectedLanguage is { } detected) _detectedSource = detected;
+        else if (!detect) _detectedSource = source;
+
+        var target = settings.TargetLanguage;
+        _overlay.SetProviders(TranslationService.TranslationProviders, translated?.ProviderId ?? provider);
+        _overlay.SetLanguages(_detectedSource, detect, target,
+            OcrService.InstalledLanguages(), LanguageChoice.RecentTargets(settings));
+        _overlay.SetTranslation(
+            text,
+            translated?.Text ?? text,
+            TranslationService.IsRtlLanguage(target),
+            ocrLineCount: 1,
+            sourceFontSizePhysical: 0,
+            sourceIsRtl: TranslationService.IsRtlLanguage(_detectedSource));
+    }
+
+    /// <summary>True once the user picked a specific source on this overlay; until then copied
+    /// text is always detected, whatever OCR is set to read.</summary>
+    private bool _userFixedSource;
+
+    private async void OnLanguagePicked(object? sender, LanguagePick pick)
+    {
+        var overlay = _overlay;
+        if (overlay == null) return;
+
+        if (pick.Source is { } source)
+            _userFixedSource = source != LanguageCatalog.Auto;
+
+        LanguageChoice.Apply(_settings, pick);
+
+        try
+        {
+            overlay.ShowLoading();
+            await TranslateIntoOverlayAsync(overlay.CurrentOriginalText, _settings.Current.DefaultTranslationProvider,
+                _cts?.Token ?? CancellationToken.None);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Copied-text re-translation after a language change failed");
         }
     }
 
@@ -167,6 +217,7 @@ public sealed class SelectionTranslationService : IDisposable
             CloseOverlay();
         };
         overlay.ApiChanged += OnProviderChanged;
+        overlay.LanguagePicked += OnLanguagePicked;
         overlay.TextCopied += (_, copied) => IgnoreOwnCopy(copied);
 
         overlay.ApplyOptions(
@@ -191,12 +242,7 @@ public sealed class SelectionTranslationService : IDisposable
             var original = overlay.CurrentOriginalText;
             if (string.IsNullOrWhiteSpace(original)) return;
 
-            var translated = await _translation.TranslateTextWithFailoverAsync(
-                providerId, original, _settings.Current.SourceLanguage, _cts?.Token ?? CancellationToken.None);
-
-            if (!ReferenceEquals(overlay, _overlay)) return;
-
-            overlay.SetTranslationDirect(string.IsNullOrWhiteSpace(translated) ? original : translated);
+            await TranslateIntoOverlayAsync(original, providerId, _cts?.Token ?? CancellationToken.None);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)

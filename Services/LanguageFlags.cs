@@ -4,7 +4,9 @@ using System.Windows.Media.Imaging;
 namespace Tarjem.Services;
 
 /// <summary>One language as the pickers show it: a flag, a name, and the code everything else uses.</summary>
-public sealed record LanguageOption(string Code, string Name, ImageSource? Flag);
+/// <param name="Detail">A muted note after the name - the language's own name for itself, or why
+/// it may not work yet.</param>
+public sealed record LanguageOption(string Code, string Name, ImageSource? Flag, string? Detail = null);
 
 /// <summary>
 /// The flag shown beside each language.
@@ -54,13 +56,29 @@ public static class LanguageFlags
 
     /// <summary>Every target language as a pickable option, flags included.</summary>
     public static LanguageOption[] Targets() =>
-        TranslationService.TargetLanguages
-            .Select(l => new LanguageOption(l.Code, l.Name, For(l.Code)))
+        Tarjem.Core.Language.LanguageCatalog.All
+            .Select(l => new LanguageOption(l.Code, l.Name, For(l.Code), l.NativeName == l.Name ? null : l.NativeName))
             .ToArray();
 
-    /// <summary>Every source language as a pickable option, flags included.</summary>
-    public static LanguageOption[] Sources() =>
-        TranslationService.SourceLanguages
-            .Select(l => new LanguageOption(l.Code, l.Name, For(l.Code)))
-            .ToArray();
+    /// <summary>
+    /// Every source language as a pickable option. Languages Windows can read on this machine come
+    /// first; the rest follow, marked, because picking one of those means OCR falls back to another
+    /// language until its pack is installed - better said in the list than discovered afterwards.
+    /// </summary>
+    /// <param name="includeAuto">Lead with "Auto-detect".</param>
+    public static LanguageOption[] Sources(bool includeAuto = false)
+    {
+        var installed = new HashSet<string>(OcrService.InstalledLanguages(), StringComparer.OrdinalIgnoreCase);
+        var all = Tarjem.Core.Language.LanguageCatalog.All;
+
+        var options = all.Where(l => installed.Contains(l.Code))
+            .Select(l => new LanguageOption(l.Code, l.Name, For(l.Code), l.NativeName == l.Name ? null : l.NativeName))
+            .Concat(all.Where(l => !installed.Contains(l.Code))
+                .Select(l => new LanguageOption(l.Code, l.Name, For(l.Code), installed.Count > 0 ? "no OCR pack" : null)));
+
+        if (includeAuto)
+            options = options.Prepend(new LanguageOption(Tarjem.Core.Language.LanguageCatalog.Auto, "Auto-detect", For("auto"), "recommended"));
+
+        return options.ToArray();
+    }
 }

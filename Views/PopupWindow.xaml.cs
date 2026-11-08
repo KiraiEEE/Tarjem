@@ -61,6 +61,16 @@ public partial class PopupWindow : Window
     private Task<TranslationResult?>? _geminiFetchTask;
 
     private TranslationResult? _currentResult;
+
+    /// <summary>The answer on show - what a language change re-asks about.</summary>
+    public TranslationResult? CurrentResult => _currentResult;
+
+    /// <summary>"EN → AR", and the way to change it without leaving the popup.</summary>
+    private readonly LanguageChip _languageChip = new() { Margin = new Thickness(0, 0, 2, 0) };
+
+    /// <summary>The user picked a language from the popup's chip.</summary>
+    public event EventHandler<LanguagePick>? LanguagePicked;
+
     private int _dictGeneration;
     private int _translationGeneration;
 
@@ -98,6 +108,29 @@ public partial class PopupWindow : Window
 
         DictionarySourceCombo.DropDownOpened += SourceCombo_DropDownOpened;
         TranslationSourceCombo.DropDownOpened += SourceCombo_DropDownOpened;
+
+        _languageChip.HorizontalAlignment = HorizontalAlignment.Right;
+        _languageChip.Picked += (_, pick) => LanguagePicked?.Invoke(this, pick);
+        PlaceLanguageChip(TranslationHeaderRow);
+    }
+
+    /// <summary>The chip lives in whichever section header is at the top of the card, so it stays
+    /// put when the user has hidden the translation section.</summary>
+    private void PlaceLanguageChip(Grid header)
+    {
+        if (ReferenceEquals(_languageChip.Parent, header)) return;
+        (_languageChip.Parent as Panel)?.Children.Remove(_languageChip);
+        Grid.SetColumn(_languageChip, 1);
+        header.Children.Add(_languageChip);
+    }
+
+    /// <summary>Fades the content while a language change is being answered.</summary>
+    public void SetBusy(bool busy)
+    {
+        _languageChip.IsBusy = busy;
+        var to = busy ? 0.5 : 1.0;
+        foreach (var section in new UIElement[] { TranslationSection, DictionarySection })
+            section.BeginAnimation(OpacityProperty, new DoubleAnimation(section.Opacity, to, TimeSpan.FromMilliseconds(120)));
     }
 
     private static readonly IEasingFunction ComboEase = new CubicEase { EasingMode = EasingMode.EaseOut };
@@ -262,6 +295,9 @@ public partial class PopupWindow : Window
         PosBadge.Background = new SolidColorBrush(_badgeBg);
         PartOfSpeechText.Foreground = new SolidColorBrush(_badgeText);
         AccentStripe.Background = new SolidColorBrush(_accentColor);
+
+        var palette = (_isDarkMode ? LanguagePickerPalette.Dark : LanguagePickerPalette.Light).WithAccent(_accentColor);
+        _languageChip.ApplyColors(_mutedColor, Color.FromArgb(0x24, 0x80, 0x80, 0x80), palette);
     }
 
     private static bool IsLightColor(Color c)
@@ -311,6 +347,12 @@ public partial class PopupWindow : Window
     public void SetTranslationResult(TranslationResult result, string dictionaryDefaultId, string translationDefaultId)
     {
         _currentResult = result;
+
+        // A combined Gemini answer fetched for the previous languages is no answer for these.
+        _geminiFetchTask = null;
+
+        _languageChip.Set(result.SourceLanguage, Options.AutoDetectSourceLanguage, result.TargetLanguage,
+            OcrService.InstalledLanguages(), LanguageChoice.RecentTargets(Options));
         OriginalWordText.Text = result.OriginalWord;
         SpeakWordBtn.Visibility = PronunciationService.CanSpeak(result.SourceLanguage) ? Visibility.Visible : Visibility.Collapsed;
 
@@ -354,6 +396,7 @@ public partial class PopupWindow : Window
         TranslationSection.Visibility = showTranslation ? Visibility.Visible : Visibility.Collapsed;
         DictionarySection.Visibility = showDictionary ? Visibility.Visible : Visibility.Collapsed;
         Divider.Visibility = showTranslation && showDictionary ? Visibility.Visible : Visibility.Collapsed;
+        PlaceLanguageChip(showTranslation ? TranslationHeaderRow : DictionaryHeaderRow);
     }
 
     /// <summary>Shows the single translated word beside the headword. Suppressed when it would

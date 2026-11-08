@@ -7,6 +7,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using Tarjem.Core.Language;
 using Tarjem.Models;
 using Tarjem.Services;
 
@@ -15,6 +16,17 @@ using FontFamily = System.Windows.Media.FontFamily;
 using Size = System.Windows.Size;
 
 namespace Tarjem.Views;
+
+/// <summary>One block of text to redraw in place.</summary>
+/// <param name="BoundsPhysical">The original text's box, in physical pixels relative to the
+/// region's top-left corner.</param>
+/// <param name="FontSizePhysical">The size the original was drawn at, in physical pixels.</param>
+/// <param name="RowCount">How many rows it spanned on screen.</param>
+/// <remarks>No weight: measured stroke widths of regular and semibold UI text overlap by less
+/// than a pixel at the sizes that matter, so a guess would be wrong often enough to look worse
+/// than consistently using the regular weight.</remarks>
+public sealed record RegionBlock(
+    Rect BoundsPhysical, string Text, Color Background, Color Foreground, double FontSizePhysical, int RowCount);
 
 /// <summary>
 /// The Alt+W result overlay. Covers the whole monitor the selected region sits on - the dim
@@ -61,12 +73,28 @@ public partial class RegionOverlayWindow : Window
     public event EventHandler? Dismissed;
     public event EventHandler<string>? ApiChanged;
 
+    /// <summary>The user picked a language from the overlay's own picker.</summary>
+    public event EventHandler<LanguagePick>? LanguagePicked;
+
     /// <summary>Fires with the text the copy button just put on the clipboard, so a clipboard
     /// watcher can tell our own copy apart from the user copying something new.</summary>
     public event EventHandler<string>? TextCopied;
 
     /// <summary>The OCR'd text currently on screen - what a provider switch re-translates.</summary>
     public string CurrentOriginalText { get; private set; } = "";
+
+    /// <summary>The whole translation, whichever way it is laid out - what the copy button copies.</summary>
+    public string CurrentTranslatedText { get; private set; } = "";
+
+    /// <summary>True while the translation is drawn block by block over the original text.</summary>
+    public bool IsInPlace => _inPlace;
+
+    /// <summary>The blocks currently drawn, for tests. Each is a patch plus its text.</summary>
+    public int BlockCount => BlocksLayer.Children.Count / 2;
+
+    private bool _inPlace;
+    private bool _showingOriginalOnly;
+    private bool _languagePanelOpen;
 
     /// <summary>Region rect in this window's own DIP coordinates (window origin = monitor origin).</summary>
     private Rect _regionDip;
@@ -76,6 +104,7 @@ public partial class RegionOverlayWindow : Window
     private Rect _plateDip;
 
     private Rect _chipRect;
+    private Rect _chipRowRect;
     private double _dpiScale = 1.0;
 
     /// <summary>Estimated font size (DIPs) of the text that was on screen in the region, so the
@@ -120,12 +149,14 @@ public partial class RegionOverlayWindow : Window
     private void Window_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         var src = e.OriginalSource as DependencyObject;
-        if (IsDescendantOf(src, ApiButton) || IsDescendantOf(src, ApiDropdown) || IsDescendantOf(src, CopyButton))
+        if (IsDescendantOf(src, ApiButton) || IsDescendantOf(src, ApiDropdown) || IsDescendantOf(src, CopyButton) ||
+            IsDescendantOf(src, LanguageButton) || IsDescendantOf(src, OriginalButton) || IsDescendantOf(src, LanguagePanelHost))
             return;
 
-        if (_dropdownOpen)
+        if (_dropdownOpen || _languagePanelOpen)
         {
             CloseDropdown();
+            CloseLanguagePanel();
             e.Handled = true;
             return;
         }
@@ -149,13 +180,17 @@ public partial class RegionOverlayWindow : Window
         _isDismissing = true;
 
         CloseDropdown(animate: false);
+        CloseLanguagePanel();
 
         var dur = TimeSpan.FromMilliseconds(FadeMs);
         FadeTo(HighlightBorder, 0, dur);
         FadeTo(TextContainer, 0, dur);
+        FadeTo(BlocksLayer, 0, dur);
         FadeTo(LoadingPanel, 0, dur);
         FadeTo(ApiButton, 0, dur);
         FadeTo(CopyButton, 0, dur);
+        FadeTo(LanguageButton, 0, dur);
+        FadeTo(OriginalButton, 0, dur);
 
         var dim = new DoubleAnimation(DimOverlay.Opacity, 0, dur) { EasingFunction = EaseOut };
         dim.Completed += (_, _) =>
@@ -237,8 +272,18 @@ public partial class RegionOverlayWindow : Window
 
         var copySize = MeasureNatural(CopyButton);
 
-        // Both chips share a row above the plate's top-right corner, provider first then copy.
-        var rowWidth = size.Width + 4 + copySize.Width;
+        // The chips that are showing share a row above the plate's top-right corner: show
+        // original, languages, provider, copy - in that order, so the provider list still hangs
+        // off its own chip.
+        var row = new List<(FrameworkElement Chip, Size Size)>();
+        foreach (var chip in new FrameworkElement[] { OriginalButton, LanguageButton, ApiButton, CopyButton })
+        {
+            if (chip.Visibility != Visibility.Visible && chip != ApiButton) continue;
+            row.Add((chip, chip == ApiButton ? size : chip == CopyButton ? copySize : MeasureNatural(chip)));
+        }
+
+        const double Gap = 4;
+        var rowWidth = row.Sum(c => c.Size.Width) + Gap * Math.Max(0, row.Count - 1);
         var left = _plateDip.Right - rowWidth;
         var top = _plateDip.Top - size.Height - 8;
         if (top < 4)
@@ -247,12 +292,21 @@ public partial class RegionOverlayWindow : Window
         left = Clamp(left, 4, Math.Max(4, Width - rowWidth - 4));
         top = Clamp(top, 4, Math.Max(4, Height - size.Height - 4));
 
-        _chipRect = new Rect(left, top, size.Width, size.Height);
-        ApiButton.Margin = new Thickness(left, top, 0, 0);
-        CopyButton.Margin = new Thickness(left + size.Width + 4, top, 0, 0);
+        _chipRowRect = new Rect(left, top, rowWidth, size.Height);
+
+        var x = left;
+        foreach (var (chip, chipSize) in row)
+        {
+            chip.Margin = new Thickness(x, top, 0, 0);
+            if (chip == ApiButton)
+                _chipRect = new Rect(x, top, chipSize.Width, chipSize.Height);
+            x += chipSize.Width + Gap;
+        }
 
         if (_dropdownOpen)
             PositionDropdown();
+        if (_languagePanelOpen)
+            PositionLanguagePanel();
     }
 
     /// <summary>Copies the translated text. The overlay covers the text it replaces, so without
@@ -261,7 +315,7 @@ public partial class RegionOverlayWindow : Window
     {
         e.Handled = true;
 
-        var text = TranslatedText.Text;
+        var text = CurrentTranslatedText;
         if (string.IsNullOrWhiteSpace(text)) return;
 
         try
@@ -329,10 +383,13 @@ public partial class RegionOverlayWindow : Window
         LoadingPanel.Visibility = Visibility.Visible;
         HighlightBorder.Visibility = Visibility.Collapsed;
         TextContainer.Visibility = Visibility.Collapsed;
+        BlocksLayer.Visibility = Visibility.Collapsed;
         ApiButton.Visibility = Visibility.Collapsed;
 
         var dur = TimeSpan.FromMilliseconds(FadeMs);
-        DimOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, _dimBehind ? DimOpacity : 0, dur) { EasingFunction = EaseOut });
+        // From wherever the dim already is: a language change re-enters loading with the overlay
+        // up, and restarting the dim from zero flashed the whole screen.
+        DimOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(DimOverlay.Opacity, _dimBehind ? DimOpacity : 0, dur) { EasingFunction = EaseOut });
         LoadingPanel.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, dur) { EasingFunction = EaseOut });
     }
 
@@ -396,10 +453,17 @@ public partial class RegionOverlayWindow : Window
         int ocrLineCount = 1, double sourceFontSizePhysical = 0, bool sourceIsRtl = false)
     {
         CurrentOriginalText = originalText;
+        CurrentTranslatedText = translatedText;
         _isRtl = isRtl;
         _sourceIsRtl = sourceIsRtl;
         _ocrLineCount = Math.Max(1, ocrLineCount);
         _sourceFontSizeDip = sourceFontSizePhysical > 0 ? sourceFontSizePhysical / _dpiScale : 0;
+
+        _inPlace = false;
+        BlocksLayer.Children.Clear();
+        BlocksLayer.Visibility = Visibility.Collapsed;
+        ApplyDimCutout(false);
+        ResetOriginalToggle();
 
         LoadingPanel.Visibility = Visibility.Collapsed;
         HighlightBorder.Visibility = Visibility.Visible;
@@ -414,8 +478,322 @@ public partial class RegionOverlayWindow : Window
         var fadeIn = new DoubleAnimation(0, 1, dur) { EasingFunction = EaseOut };
         HighlightBorder.BeginAnimation(OpacityProperty, fadeIn);
         TextContainer.BeginAnimation(OpacityProperty, fadeIn);
-        ApiButton.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, dur) { EasingFunction = EaseOut });
-        CopyButton.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, dur) { EasingFunction = EaseOut });
+        FadeInChips(dur);
+    }
+
+    private void FadeInChips(TimeSpan dur)
+    {
+        foreach (var chip in new UIElement[] { ApiButton, CopyButton, LanguageButton, OriginalButton })
+        {
+            if (chip.Opacity < 1)
+                chip.BeginAnimation(OpacityProperty, new DoubleAnimation(chip.Opacity, 1, dur) { EasingFunction = EaseOut });
+        }
+    }
+
+    // ── In place ──
+
+    /// <summary>
+    /// Draws the translation block by block over the text it replaces: each block at its own
+    /// position, on its own background colour, in its own text colour and at its own size. A
+    /// heading stays big, a blue button stays blue, and the parts of the region that had no text
+    /// stay exactly as they were - instead of the whole selection turning into one dark card.
+    /// </summary>
+    public void SetBlocks(IReadOnlyList<RegionBlock> blocks, string originalText, string translatedText, bool isRtl)
+    {
+        CurrentOriginalText = originalText;
+        CurrentTranslatedText = translatedText;
+        _isRtl = isRtl;
+        _inPlace = true;
+
+        LoadingPanel.Visibility = Visibility.Collapsed;
+        HighlightBorder.Visibility = Visibility.Collapsed;
+        TextContainer.Visibility = Visibility.Collapsed;
+
+        BlocksLayer.Children.Clear();
+
+        // All the patches first, then all the text: a patch that grew to fit a longer translation
+        // must never cover the text of the block below it.
+        var built = blocks.Select(b => BuildBlock(b, isRtl)).ToList();
+        foreach (var (patch, _) in built) BlocksLayer.Children.Add(patch);
+        foreach (var (_, text) in built) BlocksLayer.Children.Add(text);
+
+        BlocksLayer.Visibility = Visibility.Visible;
+        ApplyDimCutout(true);
+
+        ApiButton.Visibility = ApiDropdownItems.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        CopyButton.Visibility = string.IsNullOrWhiteSpace(translatedText) ? Visibility.Collapsed : Visibility.Visible;
+        OriginalButton.Visibility = Visibility.Visible;
+
+        _plateDip = _regionDip;
+        PositionApiChip();
+
+        var dur = TimeSpan.FromMilliseconds(FadeMs);
+        BlocksLayer.BeginAnimation(OpacityProperty, new DoubleAnimation(0, _showingOriginalOnly ? 0 : 1, dur) { EasingFunction = EaseOut });
+        FadeInChips(dur);
+    }
+
+    /// <summary>How far above the baseline the tallest letters reach, as a share of the font
+    /// size - where the ink starts. The original's box starts there too, so lining the two up is
+    /// what puts the translation on the original's line rather than a few pixels under it.</summary>
+    private const double AscenderEm = 0.74;
+
+    /// <summary>Up to this size, block text is snapped to the pixel grid for crispness.</summary>
+    private const double DisplayModeMaxSize = 15;
+
+    /// <summary>
+    /// One block: a patch in the original's background colour over where its text was, and the
+    /// translation on top in the original's text colour and size, starting at the
+    /// original's first line.
+    /// </summary>
+    private (Border Patch, TextBlock Text) BuildBlock(RegionBlock block, bool isRtl)
+    {
+        var sizeDip = Math.Max(4, block.FontSizePhysical / _dpiScale);
+
+        // Anti-aliasing spills a pixel or two past the ink box, and accents and descenders past
+        // the row the box was measured on, so the patch reaches a little beyond the text it hides.
+        var pad = Math.Max(1.5, sizeDip * 0.16);
+        var inkLeft = _regionDip.X + block.BoundsPhysical.X / _dpiScale;
+        var inkTop = _regionDip.Y + block.BoundsPhysical.Y / _dpiScale;
+        var inkWidth = Math.Max(4, block.BoundsPhysical.Width / _dpiScale);
+        var inkHeight = Math.Max(4, block.BoundsPhysical.Height / _dpiScale);
+
+        var font = UiFonts.For(isRtl);
+        var weight = FontWeights.Normal;
+        var flow = isRtl ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
+        var size = Clamp(UiFonts.SizeFor(sizeDip, isRtl), 7, 96);
+        var minimum = Math.Max(7, size * 0.62);
+
+        // Room to the right of the block, inside the region - a one-line label whose translation
+        // is longer than it ("Start" -> "Commencer") grows into it rather than wrapping or shrinking.
+        var roomRight = Math.Max(inkWidth, _regionDip.Right - inkLeft - pad);
+        var width = inkWidth;
+
+        if (block.RowCount <= 1)
+        {
+            var natural = Measure(block.Text, font, flow, size, double.PositiveInfinity, weight).Width + 2;
+            if (natural > width)
+                width = Math.Min(roomRight, natural);
+        }
+
+        // Shrink to fit the original's height, allowing a little slack, but not past legibility.
+        var lineSpacing = font.LineSpacing > 0 ? font.LineSpacing : 1.33;
+        var allowedHeight = Math.Max(inkHeight * 1.2, size * lineSpacing * 1.05);
+        var measured = Measure(block.Text, font, flow, size, width, weight);
+        if (measured.Height > allowedHeight)
+        {
+            var lo = minimum;
+            var hi = size;
+            for (var i = 0; i < 10 && hi - lo > 0.25; i++)
+            {
+                var mid = (lo + hi) / 2;
+                if (Measure(block.Text, font, flow, mid, width, weight).Height <= Math.Max(inkHeight * 1.2, mid * lineSpacing * 1.05)) lo = mid;
+                else hi = mid;
+            }
+            size = Math.Round(lo, 1);
+            measured = Measure(block.Text, font, flow, size, width, weight);
+        }
+
+        // The text's line box starts above its ink by the font's internal leading; shift it up by
+        // that much so the first line's ink lands where the original's did.
+        var baseline = font.Baseline > 0 ? font.Baseline : 0.92;
+        var textTop = inkTop - (baseline - AscenderEm) * size;
+
+        // Still too tall at the smallest readable size: let it run downwards within the region,
+        // and only then cut it off with an ellipsis.
+        var maxHeight = Math.Max(inkHeight, _regionDip.Bottom - textTop);
+        var trimmed = measured.Height > maxHeight + 0.5;
+        var textHeight = Math.Min(measured.Height, maxHeight);
+
+        var text = new TextBlock
+        {
+            Text = block.Text,
+            FontFamily = font,
+            FontSize = size,
+            FontWeight = weight,
+            Foreground = new SolidColorBrush(block.Foreground),
+            FlowDirection = flow,
+            TextAlignment = TextAlignment.Left,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = trimmed ? TextTrimming.CharacterEllipsis : TextTrimming.None,
+            Width = width,
+            MaxHeight = textHeight + 1,
+        };
+
+        // Small text is crisper snapped to the pixel grid; large text looks better as WPF's ideal
+        // layout draws it.
+        if (size <= DisplayModeMaxSize)
+            TextOptions.SetTextFormattingMode(text, TextFormattingMode.Display);
+
+        Canvas.SetLeft(text, inkLeft);
+        Canvas.SetTop(text, textTop);
+
+        // The patch covers the original's ink and the new text, whichever reaches further.
+        var top = Math.Min(inkTop, textTop + (baseline - AscenderEm) * size) - pad;
+        var bottom = Math.Max(inkTop + inkHeight, textTop + textHeight - (lineSpacing - baseline) * size * 0.4) + pad;
+        var right = Math.Max(inkLeft + inkWidth, inkLeft + Math.Min(width, measured.Width)) + pad;
+
+        var patch = new Border
+        {
+            Background = new SolidColorBrush(block.Background),
+            CornerRadius = new CornerRadius(Math.Min(3, pad)),
+            Width = right - (inkLeft - pad),
+            Height = Math.Min(bottom, _regionDip.Bottom + pad) - top,
+            SnapsToDevicePixels = true,
+        };
+
+        Canvas.SetLeft(patch, inkLeft - pad);
+        Canvas.SetTop(patch, top);
+        return (patch, text);
+    }
+
+    private static Size Measure(string text, FontFamily fontFamily, FlowDirection flow, double fontSize, double maxWidth,
+        FontWeight weight)
+    {
+        if (string.IsNullOrEmpty(text)) return new Size(0, 0);
+
+        // Measured the way it will be drawn: small text is drawn snapped to whole pixels (see
+        // BuildBlock), which comes out slightly wider than WPF's ideal layout. Measured in the
+        // ideal mode, a one-line label sized to fit exactly wrapped its last word onto a line that
+        // was then cut off.
+        var formatted = new FormattedText(
+            text,
+            CultureInfo.CurrentCulture,
+            flow,
+            new Typeface(fontFamily, FontStyles.Normal, weight, FontStretches.Normal),
+            fontSize,
+            Brushes.White,
+            null,
+            fontSize <= DisplayModeMaxSize ? TextFormattingMode.Display : TextFormattingMode.Ideal,
+            1.0);
+
+        if (!double.IsInfinity(maxWidth))
+            formatted.MaxTextWidth = Math.Max(1, maxWidth);
+
+        return new Size(formatted.WidthIncludingTrailingWhitespace, formatted.Height);
+    }
+
+    /// <summary>In place, the region itself is not dimmed: it should look like the screen with
+    /// the words swapped, not like the screen under a tint with some patches on it.</summary>
+    private void ApplyDimCutout(bool cut)
+    {
+        if (!cut || Width <= 0 || Height <= 0)
+        {
+            DimOverlay.Clip = null;
+            return;
+        }
+
+        DimOverlay.Clip = new CombinedGeometry(
+            GeometryCombineMode.Exclude,
+            new RectangleGeometry(new Rect(0, 0, Width, Height)),
+            new RectangleGeometry(_regionDip));
+    }
+
+    // ── Show original ──
+
+    private void OriginalButton_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        _showingOriginalOnly = !_showingOriginalOnly;
+
+        var to = _showingOriginalOnly ? 0 : 1;
+        var dur = TimeSpan.FromMilliseconds(120);
+        foreach (var layer in _inPlace ? new UIElement[] { BlocksLayer } : new UIElement[] { HighlightBorder, TextContainer })
+            layer.BeginAnimation(OpacityProperty, new DoubleAnimation(layer.Opacity, to, dur) { EasingFunction = EaseOut });
+
+        OriginalButton.ToolTip = _showingOriginalOnly ? "Show the translation" : "Show the original";
+        OriginalIcon.Stroke = new SolidColorBrush(_showingOriginalOnly ? Color.FromRgb(0x5B, 0x9E, 0xF5) : Color.FromRgb(0xDD, 0xDD, 0xDD));
+    }
+
+    private void ResetOriginalToggle()
+    {
+        _showingOriginalOnly = false;
+        OriginalButton.ToolTip = "Show the original";
+        OriginalIcon.Stroke = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD));
+    }
+
+    /// <summary>Whether the show-original chip is offered at all. The copied-text overlay has no
+    /// original on screen to reveal, so it leaves this off.</summary>
+    public bool OffersShowOriginal
+    {
+        set => OriginalButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ── Languages ──
+
+    private string _source = "en";
+    private bool _sourceIsAuto;
+    private string _target = "ar";
+    private IReadOnlyList<string> _installedSources = Array.Empty<string>();
+    private IReadOnlyList<string> _recentTargets = Array.Empty<string>();
+
+    /// <summary>Shows the language chip, labelled with the pair in force. <paramref name="source"/>
+    /// is the language actually read - the detected one, when detecting.</summary>
+    public void SetLanguages(string source, bool sourceIsAuto, string target,
+        IReadOnlyList<string> installedSources, IReadOnlyList<string> recentTargets)
+    {
+        _source = source;
+        _sourceIsAuto = sourceIsAuto;
+        _target = target;
+        _installedSources = installedSources;
+        _recentTargets = recentTargets;
+
+        LanguageChipText.Text = $"{LanguageCatalog.ShortLabel(source)}  \u2192  {LanguageCatalog.ShortLabel(target)}";
+        LanguageButton.ToolTip =
+            $"{LanguageCatalog.NameOf(source)}{(sourceIsAuto ? " (detected)" : "")} to {LanguageCatalog.NameOf(target)}. Click to change.";
+        LanguageButton.Visibility = Visibility.Visible;
+        PositionApiChip();
+    }
+
+    private void LanguageButton_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (_languagePanelOpen)
+        {
+            CloseLanguagePanel();
+            return;
+        }
+
+        CloseDropdown();
+
+        var panel = new LanguagePickerPanel(LanguagePickerPalette.Dark);
+        panel.Load(_source, _sourceIsAuto, _target, _installedSources, _recentTargets);
+        panel.Picked += (_, pick) =>
+        {
+            CloseLanguagePanel();
+            LanguagePicked?.Invoke(this, pick);
+        };
+
+        LanguagePanelHost.Content = panel;
+        LanguagePanelHost.Visibility = Visibility.Visible;
+        _languagePanelOpen = true;
+        PositionLanguagePanel();
+
+        LanguagePanelHost.BeginAnimation(OpacityProperty,
+            new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120)) { EasingFunction = EaseOut });
+    }
+
+    private void CloseLanguagePanel()
+    {
+        if (!_languagePanelOpen) return;
+        _languagePanelOpen = false;
+        LanguagePanelHost.Visibility = Visibility.Collapsed;
+        LanguagePanelHost.Content = null;
+    }
+
+    /// <summary>Under the chip row, right edges aligned; above it when there's no room below.</summary>
+    private void PositionLanguagePanel()
+    {
+        var size = MeasureNatural(LanguagePanelHost);
+        if (size.Width <= 0 || size.Height <= 0) return;
+
+        var left = _chipRowRect.Right - size.Width;
+        var top = _chipRowRect.Bottom + 4;
+        if (top + size.Height > Height - 4)
+            top = _chipRowRect.Top - size.Height - 4;
+
+        left = Clamp(left, 4, Math.Max(4, Width - size.Width - 4));
+        top = Clamp(top, 4, Math.Max(4, Height - size.Height - 4));
+        LanguagePanelHost.Margin = new Thickness(left, top, 0, 0);
     }
 
     /// <summary>
@@ -466,6 +844,7 @@ public partial class RegionOverlayWindow : Window
     /// provider) without re-running the fade-in of the whole overlay.</summary>
     public void SetTranslationDirect(string translatedText)
     {
+        CurrentTranslatedText = translatedText;
         var fadeOut = new DoubleAnimation(TextContainer.Opacity, 0, TimeSpan.FromMilliseconds(70));
         fadeOut.Completed += (_, _) =>
         {
@@ -710,6 +1089,7 @@ public partial class RegionOverlayWindow : Window
     private void OpenDropdown()
     {
         if (ApiDropdownItems.Children.Count == 0) return;
+        CloseLanguagePanel();
 
         _dropdownOpen = true;
         ApiDropdown.Visibility = Visibility.Visible;

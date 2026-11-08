@@ -21,7 +21,7 @@ public sealed class EncyclopediaService
     {
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(6) };
         // Wikimedia asks every client to identify itself and rate-limits anonymous defaults harder.
-        _http.DefaultRequestHeaders.Add("User-Agent", "Tarjem/0.4 (https://github.com/IdleBuilt/Tarjem)");
+        _http.DefaultRequestHeaders.Add("User-Agent", $"Tarjem/{UpdateService.CurrentVersion} (https://github.com/KiraiEEE/Tarjem)");
         _http.DefaultRequestHeaders.Add("Accept", "application/json");
     }
 
@@ -202,6 +202,10 @@ public sealed class EncyclopediaService
     private static string EditionFor(string languageCode)
     {
         if (string.IsNullOrWhiteSpace(languageCode)) return "en";
+
+        // Mostly the base tag, but not always: Norwegian Bokmål's Wikipedia is "no", not "nb".
+        if (Tarjem.Core.Language.LanguageCatalog.Find(languageCode) is { } known) return known.Wiki;
+
         var dash = languageCode.IndexOf('-');
         return (dash > 0 ? languageCode[..dash] : languageCode).ToLowerInvariant();
     }

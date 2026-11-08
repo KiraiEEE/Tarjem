@@ -110,6 +110,12 @@ public partial class App : Application
         }
 
         _lookupPipeline = new LookupPipeline(_ocrService, _translationService, _settingsService, _historyService);
+        _overlayService.RetranslateWord = async (previous, ct) =>
+        {
+            var result = await _lookupPipeline.RetranslateAsync(previous, ct);
+            _mainWindow?.RefreshHistory();
+            return result;
+        };
 
         // Building a Windows OCR engine takes a noticeable moment, and the constructor only ever
         // builds the English one. Anyone reading in another language paid for theirs on their very
@@ -316,6 +322,19 @@ public partial class App : Application
         var exitItem = new System.Windows.Controls.MenuItem { Header = "Exit" };
         exitItem.Click += (s, args) => Shutdown();
 
+        // Language quick switch. Rebuilt every time the menu opens, so it always shows what is
+        // in force now - a pick in a popup, the overlay or Settings changes it too.
+        var fromItem = new System.Windows.Controls.MenuItem { Header = "Translate from" };
+        var toItem = new System.Windows.Controls.MenuItem { Header = "Translate to" };
+        contextMenu.Opened += (_, _) =>
+        {
+            try { FillLanguageMenus(fromItem, toItem); }
+            catch (Exception ex) { Log.Warning(ex, "Could not build the tray language menus"); }
+        };
+
+        contextMenu.Items.Add(fromItem);
+        contextMenu.Items.Add(toItem);
+        contextMenu.Items.Add(new System.Windows.Controls.Separator());
         contextMenu.Items.Add(historyItem);
         contextMenu.Items.Add(settingsItem);
         contextMenu.Items.Add(new System.Windows.Controls.Separator());
@@ -326,6 +345,54 @@ public partial class App : Application
         // With history off there's no History page to land on, so go straight to Settings.
         _trayIcon.DoubleClickCommand = new DelegateCommand(() =>
             ShowMainWindow(_settingsService!.Current.HistoryEnabled ? HistoryTabIndex : SettingsTabIndex));
+    }
+
+    /// <summary>
+    /// The tray's "Translate from" / "Translate to" submenus. Short on purpose: the source menu
+    /// offers Auto-detect and the languages Windows can actually read here, the target menu the
+    /// recent ones, and each has a full list one level down - a tray menu with thirty-six entries
+    /// at the top level is a list nobody can find anything in.
+    /// </summary>
+    private void FillLanguageMenus(System.Windows.Controls.MenuItem fromItem, System.Windows.Controls.MenuItem toItem)
+    {
+        var settings = _settingsService!.Current;
+        var installed = OcrService.InstalledLanguages();
+
+        fromItem.Items.Clear();
+        fromItem.Items.Add(LanguageMenuItem("Auto-detect", settings.AutoDetectSourceLanguage,
+            new LanguagePick(Tarjem.Core.Language.LanguageCatalog.Auto, null)));
+        fromItem.Items.Add(new System.Windows.Controls.Separator());
+
+        foreach (var code in installed)
+            fromItem.Items.Add(LanguageMenuItem(Tarjem.Core.Language.LanguageCatalog.NameOf(code),
+                !settings.AutoDetectSourceLanguage && settings.SourceLanguage == code, new LanguagePick(code, null)));
+
+        var moreSources = new System.Windows.Controls.MenuItem { Header = installed.Count > 0 ? "Other languages" : "All languages" };
+        foreach (var language in Tarjem.Core.Language.LanguageCatalog.All.Where(l => !installed.Contains(l.Code)))
+            moreSources.Items.Add(LanguageMenuItem(language.Name,
+                !settings.AutoDetectSourceLanguage && settings.SourceLanguage == language.Code, new LanguagePick(language.Code, null)));
+        fromItem.Items.Add(moreSources);
+
+        fromItem.Header = $"Translate from: {(settings.AutoDetectSourceLanguage ? "Auto-detect" : Tarjem.Core.Language.LanguageCatalog.NameOf(settings.SourceLanguage))}";
+
+        toItem.Items.Clear();
+        foreach (var code in LanguageChoice.RecentTargets(settings))
+            toItem.Items.Add(LanguageMenuItem(Tarjem.Core.Language.LanguageCatalog.NameOf(code), settings.TargetLanguage == code, new LanguagePick(null, code)));
+        toItem.Items.Add(new System.Windows.Controls.Separator());
+
+        var allTargets = new System.Windows.Controls.MenuItem { Header = "All languages" };
+        foreach (var language in Tarjem.Core.Language.LanguageCatalog.All)
+            allTargets.Items.Add(LanguageMenuItem(language.Name, settings.TargetLanguage == language.Code, new LanguagePick(null, language.Code)));
+        toItem.Items.Add(allTargets);
+
+        toItem.Header = $"Translate to: {Tarjem.Core.Language.LanguageCatalog.NameOf(settings.TargetLanguage)}";
+    }
+
+    private System.Windows.Controls.MenuItem LanguageMenuItem(string header, bool isChecked, LanguagePick pick)
+    {
+        var item = new System.Windows.Controls.MenuItem { Header = header, IsCheckable = true, IsChecked = isChecked };
+        item.Click += (_, _) => LanguageChoice.Apply(_settingsService!, pick);
+        return item;
     }
 
     private void ApplyHistoryMenuVisibility()
@@ -390,7 +457,7 @@ public partial class App : Application
             {
                 if (IsStale(generation)) return;
                 _overlayService.ShowHighlight(word.WordRectPhysical);
-                explain = _overlayService.ShowExplainLoading(word.WordRectPhysical, word.Word);
+                explain = _overlayService.ShowExplainLoading(word.WordRectPhysical, word.Word, word.LanguageTag);
             }
 
             var outcome = await _lookupPipeline.RunAsync(mode, cursor, cts.Token, word);

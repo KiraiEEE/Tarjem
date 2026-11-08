@@ -57,6 +57,7 @@ public partial class ExplainWindow : Window
     {
         InitializeComponent();
         _styler = new CardStyler(this, RootCard, CardShadow, GlassBackdropLayer, GlassTintLayer);
+        SetUpLanguageChip();
         ApplyTheme();
         ApplyStyle(CardStyler.Minimal);
 
@@ -74,6 +75,32 @@ public partial class ExplainWindow : Window
     /// <see cref="Services.OverlayService"/> before the card is shown; null in the smoke tests,
     /// where the switcher simply does nothing.</summary>
     public Func<string, Task<TranslationResult?>>? SourceRequested { get; set; }
+
+    /// <summary>"EN → AR" - which Wikipedia was asked and what it was translated into - and the
+    /// way to change either from the card.</summary>
+    private readonly LanguageChip _languageChip = new() { Margin = new Thickness(0, 0, 6, 0) };
+
+    /// <summary>The user picked a language from the card's chip.</summary>
+    public event EventHandler<LanguagePick>? LanguagePicked;
+
+    /// <summary>The term the card is about.</summary>
+    public string Term => _term;
+
+    /// <summary>The language the current answer was looked up in.</summary>
+    public string? CurrentSourceLanguage { get; private set; }
+
+    private void SetUpLanguageChip()
+    {
+        HeaderActions.Children.Insert(0, _languageChip);
+        _languageChip.Picked += (_, pick) => LanguagePicked?.Invoke(this, pick);
+    }
+
+    private void ShowLanguages(string source)
+    {
+        CurrentSourceLanguage = source;
+        _languageChip.Set(source, Options.AutoDetectSourceLanguage, Options.TargetLanguage,
+            OcrService.InstalledLanguages(), LanguageChoice.RecentTargets(Options));
+    }
 
     /// <summary>The term this card is about, kept so the switcher can re-ask about it.</summary>
     private string _term = "";
@@ -228,6 +255,8 @@ public partial class ExplainWindow : Window
         KindLabel.Foreground = muted;
         SourceChip.Foreground = muted;
         LoadingText.Foreground = muted;
+        _languageChip.ApplyColors(muted.Color, Color.FromArgb(0x24, 0x80, 0x80, 0x80),
+            dark ? LanguagePickerPalette.Dark : LanguagePickerPalette.Light);
         TranslationDivider.Background = new SolidColorBrush(dark ? Color.FromRgb(0x3A, 0x3A, 0x4A) : Color.FromRgb(0xE0, 0xE0, 0xE6));
 
         foreach (var button in new[] { CopyButton, SourceButton })
@@ -239,9 +268,10 @@ public partial class ExplainWindow : Window
 
     /// <summary>Shows the card in its loading state, so the window appears immediately on the
     /// keypress instead of after the network round-trip.</summary>
-    public void ShowLoading(string word)
+    public void ShowLoading(string word, string? sourceLanguage = null)
     {
         _term = word;
+        ShowLanguages(sourceLanguage ?? CurrentSourceLanguage ?? Options.SourceLanguage);
         TitleText.Text = word;
         LoadingText.Visibility = Visibility.Visible;
         SummaryText.Visibility = Visibility.Collapsed;
@@ -254,6 +284,7 @@ public partial class ExplainWindow : Window
 
     public void SetResult(TranslationResult result)
     {
+        ShowLanguages(string.IsNullOrEmpty(result.SourceLanguage) ? Options.SourceLanguage : result.SourceLanguage);
         LoadingText.Visibility = Visibility.Collapsed;
         ActionRow.Visibility = Visibility.Visible;
 

@@ -1,9 +1,14 @@
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows;
 using Serilog;
+using Tarjem.Core.Language;
 using Tarjem.Core.Ocr;
 using Tarjem.Models;
 using Tarjem.Views;
+
+using Color = System.Windows.Media.Color;
 
 namespace Tarjem.Services;
 
@@ -20,19 +25,31 @@ public class RegionTranslationService : IDisposable
     private RegionOverlayWindow? _overlayWindow;
     private CancellationTokenSource? _cts;
 
-    /// <summary>Language OCR actually read the region in - a provider switch has to re-translate
-    /// from the same source language, not from a hardcoded "en".</summary>
-    private string _lastSourceLanguage = "en";
-    private int _lastOcrLineCount = 1;
-    private int _apiSwitchGeneration;
+    /// <summary>The region as captured, kept while its overlay is up so a change of source
+    /// language can read it again with the right engine - the screen itself is covered by the
+    /// overlay by then. Disposed with the overlay.</summary>
+    private Bitmap? _capture;
+
+    /// <summary>What the current overlay is showing, so a provider or language change can redo
+    /// just the part that changed.</summary>
+    private RegionReading? _reading;
+
+    private int _redoGeneration;
     private EscapeWatcher? _escapeWatcher;
 
-    /// <summary>Fires when a region translation completes and is added to history.</summary>
+    /// <summary>Fires when a region translation completes.</summary>
     public event EventHandler<TranslationResult>? TranslationCompleted;
+
+    /// <summary>One region, read: its blocks of text, in which language, and how sure we are.</summary>
+    private sealed record RegionReading(
+        RecognizedText Ocr, IReadOnlyList<TextBlock> Blocks, string LanguageTag, bool SourceIsGuess, string Provider)
+    {
+        public string Text => string.Join("\n", Blocks.Select(b => b.Text));
+    }
 
     /// <remarks>Deliberately takes no HistoryService: region translations are whole paragraphs of
     /// screen text, and writing those into what is meant to be a vocabulary list of looked-up
-    /// words buries the words. See step 6 of <see cref="ProcessRegionAsync"/>.</remarks>
+    /// words buries the words.</remarks>
     public RegionTranslationService(
         OcrService ocrService,
         TranslationService translationService,
@@ -151,6 +168,8 @@ public class RegionTranslationService : IDisposable
                 return;
             }
 
+            ReplaceCapture(bitmap);
+
             // Show overlay in loading state. Held in a local as well as the field: every callback
             // below checks it is still *the* overlay before touching anything, because the field
             // moves on to a newer overlay the moment the user presses Alt+W again.
@@ -170,6 +189,7 @@ public class RegionTranslationService : IDisposable
                 CloseOverlayWindow();
             };
             overlay.ApiChanged += OnApiChanged;
+            overlay.LanguagePicked += OnLanguagePicked;
 
             var overlayOptions = _settingsService.Current;
             overlay.ApplyOptions(
@@ -178,118 +198,21 @@ public class RegionTranslationService : IDisposable
                 matchSourceFontSize: overlayOptions.RegionFontSizeMode != "FitRegion");
 
             overlay.PositionOverRegion(screenRegion);
+            overlay.OffersShowOriginal = true;
             overlay.ShowLoading();
             overlay.Show();
 
-            try
+            ct.ThrowIfCancellationRequested();
+
+            // 2-4. Read, translate, show.
+            var reading = await ReadAsync(bitmap, ct);
+            if (reading == null)
             {
-                ct.ThrowIfCancellationRequested();
-
-                // 2. OCR all text in the region
-                var settings = _settingsService.Current;
-                string sourceLanguageTag;
-                RecognizedText? ocrResult;
-
-                if (settings.AutoDetectSourceLanguage)
-                {
-                    var candidates = TranslationService.SourceLanguages
-                        .Select(l => l.Code)
-                        .Where(_ocrService.IsLanguageAvailable)
-                        .ToList();
-
-                    var detected = await _ocrService.DetectAndRecognizeAsync(bitmap, candidates, settings.SourceLanguage, ct);
-                    ct.ThrowIfCancellationRequested();
-
-                    if (detected == null)
-                    {
-                        ShowNoTextFound(overlay);
-                        return;
-                    }
-
-                    ocrResult = detected.Value.Result;
-                    sourceLanguageTag = detected.Value.LanguageTag;
-                }
-                else
-                {
-                    sourceLanguageTag = settings.SourceLanguage;
-                    ocrResult = await _ocrService.RecognizeTextAsync(bitmap, sourceLanguageTag);
-                    ct.ThrowIfCancellationRequested();
-                }
-
-                if (ocrResult == null || ocrResult.Lines.Count == 0)
-                {
-                    ShowNoTextFound(overlay);
-                    return;
-                }
-
-                // 3. Build the text from the OCR lines, rejoining sentences that only wrapped on
-                //    screen. Sent row by row, a sentence split across three rows was translated as
-                //    three fragments, each forced into the source's clause order - see TextReflow.
-                var logicalLines = TextReflow.LogicalLines(ocrResult);
-                var originalText = string.Join("\n", logicalLines);
-                if (string.IsNullOrWhiteSpace(originalText))
-                {
-                    ShowNoTextFound(overlay);
-                    return;
-                }
-
-                ct.ThrowIfCancellationRequested();
-
-                // 4. Translate the combined text with whichever provider is configured as the
-                //    default, so the chip on the overlay names the source actually used.
-                var (targetLangCode, _) = GetTargetLanguage();
-                _lastSourceLanguage = sourceLanguageTag;
-                _lastOcrLineCount = logicalLines.Count;
-
-                var currentProvider = _translationService.ResolveRegionProvider();
-
-                var translatedText = await TranslateRegionTextAsync(currentProvider, originalText, sourceLanguageTag, targetLangCode, ct);
-
-                ct.ThrowIfCancellationRequested();
-
-                // 5. Show the translation
-                if (ReferenceEquals(overlay, _overlayWindow))
-                {
-                    var isRtl = TranslationService.IsRtlLanguage(targetLangCode);
-
-                    // Borrow the region's own colors so the overlay sits inside the game's look
-                    // instead of on top of it. Only when the user asked for it, and never at the
-                    // cost of the translation: extraction failing just leaves the default plate.
-                    if (_settingsService.Current.RegionMatchesSceneTheme && bitmap != null)
-                    {
-                        try
-                        {
-                            overlay.ApplySceneTheme(ColorExtractionService.ExtractFromBitmap(bitmap));
-                        }
-                        catch (Exception ex)
-                        {
-                            Log.Debug(ex, "Scene theme extraction failed; using the default overlay colors");
-                        }
-                    }
-
-                    overlay.SetProviders(TranslationService.TranslationProviders, currentProvider);
-                    overlay.SetTranslation(originalText, translatedText, isRtl,
-                        logicalLines.Count, EstimateSourceFontSize(ocrResult),
-                        TranslationService.IsRtlLanguage(sourceLanguageTag));
-                }
-
-                // 6. Region translations deliberately do NOT go into history: history is a
-                //    vocabulary list of looked-up words (Alt+Q), and filling it with whole
-                //    paragraphs of screen text buries those. The event still fires for anything
-                //    that wants to observe region translations.
-                TranslationCompleted?.Invoke(this, new TranslationResult
-                {
-                    OriginalWord = originalText,
-                    ArabicTranslation = translatedText,
-                    FullSentence = originalText,
-                    SourceLanguage = sourceLanguageTag,
-                    TargetLanguage = targetLangCode
-                });
+                ShowNoTextFound(overlay);
+                return;
             }
-            finally
-            {
-                bitmap?.Dispose();
-            }
+
+            await TranslateAndPresentAsync(overlay, reading, ct);
         }
         catch (OperationCanceledException)
         {
@@ -307,27 +230,194 @@ public class RegionTranslationService : IDisposable
         }
     }
 
+    /// <summary>OCR the region in the language Settings asks for, or the detected one, and split it
+    /// into blocks. Null when there is no text in it.</summary>
+    private async Task<RegionReading?> ReadAsync(Bitmap bitmap, CancellationToken ct)
+    {
+        var settings = _settingsService.Current;
+        RecognizedText? ocr;
+        string language;
+
+        if (settings.AutoDetectSourceLanguage)
+        {
+            var candidates = OcrService.InstalledLanguages();
+            if (candidates.Count == 0) candidates = [settings.SourceLanguage];
+
+            var detected = await _ocrService.DetectAndRecognizeAsync(bitmap, candidates, settings.SourceLanguage, ct);
+            ct.ThrowIfCancellationRequested();
+            if (detected == null) return null;
+
+            ocr = detected.Value.Result;
+            language = detected.Value.LanguageTag;
+        }
+        else
+        {
+            (ocr, language) = await _ocrService.RecognizeWithLanguageAsync(bitmap, settings.SourceLanguage);
+            ct.ThrowIfCancellationRequested();
+        }
+
+        if (ocr == null || ocr.Lines.Count == 0) return null;
+
+        // Rejoin sentences that only wrapped on screen. Sent row by row, a sentence split across
+        // three rows was translated as three fragments, each forced into the source's clause
+        // order - see TextReflow.
+        var blocks = TextReflow.LogicalBlocks(ocr);
+        if (blocks.Count == 0 || blocks.All(b => string.IsNullOrWhiteSpace(b.Text))) return null;
+
+        return new RegionReading(ocr, blocks, language, settings.AutoDetectSourceLanguage,
+            _translationService.ResolveRegionProvider());
+    }
+
+    /// <summary>Translates a reading with its provider and puts the result on the overlay.</summary>
+    private async Task TranslateAndPresentAsync(RegionOverlayWindow overlay, RegionReading reading, CancellationToken ct)
+    {
+        var translated = await _translationService.TranslateBlockAsync(
+            reading.Provider, reading.Text, reading.LanguageTag, reading.SourceIsGuess, ct);
+        ct.ThrowIfCancellationRequested();
+
+        if (!ReferenceEquals(overlay, _overlayWindow)) return;
+
+        // The translator saw whole sentences; when it says the text is in another language than
+        // OCR guessed, the label on the chip follows it.
+        if (reading.SourceIsGuess && translated?.DetectedLanguage is { } detected &&
+            LanguageCatalog.Find(detected)?.Code is { } detectedCode && detectedCode != LanguageCatalog.Find(reading.LanguageTag)?.Code)
+            reading = reading with { LanguageTag = detectedCode };
+
+        _reading = reading;
+        Present(overlay, reading, translated);
+
+        TranslationCompleted?.Invoke(this, new TranslationResult
+        {
+            OriginalWord = reading.Text,
+            ArabicTranslation = translated?.Text ?? reading.Text,
+            FullSentence = reading.Text,
+            SourceLanguage = reading.LanguageTag,
+            TargetLanguage = _settingsService.Current.TargetLanguage,
+        });
+    }
+
+    /// <summary>
+    /// Lays the translation out. In place when that is the setting and the translation came back
+    /// with one line per block - the translators are sent the blocks one per line and nearly
+    /// always keep that shape, which is what lets each line go back where it came from. When the
+    /// shape didn't survive, or nothing translated, the panel shows it instead: a whole translation
+    /// on a plate beats a misaligned one.
+    /// </summary>
+    private void Present(RegionOverlayWindow overlay, RegionReading reading, TranslationService.BlockTranslation? translated)
+    {
+        var settings = _settingsService.Current;
+        var target = settings.TargetLanguage;
+        var isRtl = TranslationService.IsRtlLanguage(target);
+
+        // Credit the source that actually answered - after a failover, not the one picked.
+        overlay.SetProviders(TranslationService.TranslationProviders, translated?.ProviderId ?? reading.Provider);
+        overlay.SetLanguages(reading.LanguageTag, settings.AutoDetectSourceLanguage, target,
+            OcrService.InstalledLanguages(), LanguageChoice.RecentTargets(settings));
+
+        var text = translated?.Text ?? reading.Text;
+        var lines = text.Replace("\r\n", "\n").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+
+        var inPlace = settings.RegionDisplayMode != "Panel"
+                      && translated != null
+                      && lines.Count == reading.Blocks.Count
+                      && _capture != null;
+
+        if (inPlace)
+        {
+            try
+            {
+                overlay.SetBlocks(BuildBlocks(reading, lines), reading.Text, text, isRtl);
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "In-place layout failed; showing the panel instead");
+            }
+        }
+        else if (settings.RegionDisplayMode != "Panel" && translated != null)
+        {
+            Log.Debug("Translation came back with {Lines} lines for {Blocks} blocks; using the panel",
+                lines.Count, reading.Blocks.Count);
+        }
+
+        // Borrow the region's own colors so the panel sits inside the game's look instead of on
+        // top of it. Only when the user asked for it, and never at the cost of the translation.
+        if (settings.RegionMatchesSceneTheme && _capture != null)
+        {
+            try
+            {
+                overlay.ApplySceneTheme(ColorExtractionService.ExtractFromBitmap(_capture));
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Scene theme extraction failed; using the default overlay colors");
+            }
+        }
+
+        overlay.SetTranslation(reading.Text, text, isRtl,
+            reading.Blocks.Count, EstimateSourceFontSize(reading.Ocr),
+            TranslationService.IsRtlLanguage(reading.LanguageTag));
+    }
+
+    /// <summary>Pairs each block with its translated line and the colours it was drawn in.</summary>
+    private List<RegionBlock> BuildBlocks(RegionReading reading, IReadOnlyList<string> lines)
+    {
+        var capture = _capture!;
+        var rect = new Rectangle(0, 0, capture.Width, capture.Height);
+        var data = capture.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        byte[] pixels;
+        int stride;
+        try
+        {
+            stride = Math.Abs(data.Stride);
+            pixels = new byte[stride * capture.Height];
+            Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+        }
+        finally
+        {
+            capture.UnlockBits(data);
+        }
+
+        var blocks = new List<RegionBlock>(reading.Blocks.Count);
+        for (var i = 0; i < reading.Blocks.Count; i++)
+        {
+            var block = reading.Blocks[i];
+            var ring = (int)Math.Ceiling(Math.Max(2, block.RowHeight * 0.3));
+            var palette = BlockColors.Sample(pixels, capture.Width, capture.Height, stride, block.Bounds, ring);
+
+            blocks.Add(new RegionBlock(
+                new Rect(block.Bounds.X, block.Bounds.Y, block.Bounds.Width, block.Bounds.Height),
+                lines[i],
+                ToColor(palette.Background),
+                ToColor(palette.Foreground),
+                InkMetrics.FontSizeFromInk(block.RowHeight, block.Text),
+                block.LineIndices.Count));
+        }
+        return blocks;
+    }
+
+    private static Color ToColor(Rgb c) => Color.FromRgb(c.R, c.G, c.B);
+
     /// <summary>Re-runs the translation through the provider the user just picked from the
     /// overlay's chip. The overlay stays up throughout - only its text is swapped.</summary>
     private async void OnApiChanged(object? sender, string newApiId)
     {
         var overlay = _overlayWindow;
-        if (overlay == null) return;
+        if (overlay == null || _reading == null) return;
 
-        var generation = ++_apiSwitchGeneration;
+        var generation = ++_redoGeneration;
         var ct = _cts?.Token ?? CancellationToken.None;
         try
         {
-            var originalText = overlay.CurrentOriginalText;
-            if (string.IsNullOrWhiteSpace(originalText)) return;
-
-            var (targetLangCode, _) = GetTargetLanguage();
-            var translatedText = await TranslateRegionTextAsync(newApiId, originalText, _lastSourceLanguage, targetLangCode, ct);
+            var reading = _reading with { Provider = newApiId };
+            var translated = await _translationService.TranslateBlockAsync(
+                newApiId, reading.Text, reading.LanguageTag, reading.SourceIsGuess, ct);
 
             // A newer pick (or a dismissal) supersedes this one.
-            if (generation != _apiSwitchGeneration || !ReferenceEquals(overlay, _overlayWindow)) return;
+            if (generation != _redoGeneration || !ReferenceEquals(overlay, _overlayWindow)) return;
 
-            overlay.SetTranslationDirect(translatedText);
+            _reading = reading;
+            Present(overlay, reading, translated);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -336,23 +426,70 @@ public class RegionTranslationService : IDisposable
         }
     }
 
-    /// <summary>Translates a whole block of OCR'd text, walking the full provider chain rather
-    /// than a single hardcoded fallback - the overlay covers the text it replaces, so coming back
-    /// empty leaves the user with less than they started with.</summary>
-    private async Task<string> TranslateRegionTextAsync(string providerId, string text, string sourceLang, string targetLang, CancellationToken ct)
+    /// <summary>
+    /// A language picked on the overlay. It becomes the default, like a pick anywhere else. A new
+    /// target only needs the same text translated again; a new source means the region has to be
+    /// read again with that language's engine - Japanese read by the English engine is not text
+    /// any translator can rescue - which is what the kept capture is for.
+    /// </summary>
+    private async void OnLanguagePicked(object? sender, LanguagePick pick)
     {
-        var translated = await _translationService.TranslateTextWithFailoverAsync(providerId, text, sourceLang, ct);
-        return string.IsNullOrWhiteSpace(translated) ? text : translated;
+        var overlay = _overlayWindow;
+        if (overlay == null) return;
+        if (!LanguageChoice.Apply(_settingsService, pick)) return;
+
+        var generation = ++_redoGeneration;
+        var ct = _cts?.Token ?? CancellationToken.None;
+        try
+        {
+            overlay.ShowLoading();
+
+            RegionReading? reading = _reading;
+            if (pick.Source != null || reading == null)
+            {
+                if (_capture == null) return;
+                reading = await ReadAsync(_capture, ct);
+            }
+            else
+            {
+                reading = reading with { Provider = _translationService.ResolveRegionProvider() };
+            }
+
+            if (generation != _redoGeneration || !ReferenceEquals(overlay, _overlayWindow)) return;
+
+            if (reading == null)
+            {
+                ShowNoTextFound(overlay);
+                return;
+            }
+
+            await TranslateAndPresentAsync(overlay, reading, ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Region re-translation after a language change failed");
+        }
     }
 
     private void ShowNoTextFound(RegionOverlayWindow overlay)
     {
-        if (ReferenceEquals(overlay, _overlayWindow))
-            overlay.SetTranslation("", "No text found in region");
+        if (!ReferenceEquals(overlay, _overlayWindow)) return;
+
+        var settings = _settingsService.Current;
+        overlay.SetLanguages(settings.SourceLanguage, settings.AutoDetectSourceLanguage, settings.TargetLanguage,
+            OcrService.InstalledLanguages(), LanguageChoice.RecentTargets(settings));
+
+        // Name the likely cause. With a fixed source language, the usual one is that the region
+        // is in another script - which the language chip right above this message can fix.
+        var hint = settings.AutoDetectSourceLanguage
+            ? "No text found in this region."
+            : $"No {LanguageCatalog.NameOf(settings.SourceLanguage)} text found. If it's in another language, pick it above.";
+        overlay.SetTranslation("", hint);
     }
 
     /// <summary>
-    /// Estimates the font size (physical pixels) of the text OCR just read, so the overlay can
+    /// Estimates the font size (physical pixels) of the text OCR just read, so the panel can
     /// render the translation at the size it's replacing instead of stretching it to fill the
     /// selection. Uses each line's ink span (top of its tallest ascender to the bottom of its
     /// lowest descender) rather than individual word boxes, since a line almost always contains
@@ -362,7 +499,7 @@ public class RegionTranslationService : IDisposable
     {
         // Measured against Segoe UI text rendered at known sizes and put through this exact
         // pipeline: a mixed-case line's ink height is a very stable 0.77 of the em size
-        // (0.76-0.79 from 12px to 36px). See the calibration run in the PR notes.
+        // (0.76-0.79 from 12px to 36px).
         const double InkToEmRatio = 0.77;
 
         var spans = new List<double>();
@@ -383,20 +520,6 @@ public class RegionTranslationService : IDisposable
         return spans[spans.Count / 2] / InkToEmRatio;
     }
 
-    private (string Code, string Name) GetTargetLanguage()
-    {
-        var code = _settingsService.Current.TargetLanguage;
-        if (string.IsNullOrEmpty(code))
-            return ("ar", "Arabic");
-
-        foreach (var lang in TranslationService.TargetLanguages)
-        {
-            if (lang.Code == code)
-                return (lang.Code, lang.Name);
-        }
-        return ("ar", "Arabic");
-    }
-
     private static async Task<Bitmap?> CaptureRegionAsync(int x, int y, int width, int height)
     {
         if (width <= 0 || height <= 0) return null;
@@ -408,6 +531,13 @@ public class RegionTranslationService : IDisposable
             graphics.CopyFromScreen(x, y, 0, 0, new System.Drawing.Size(width, height), System.Drawing.CopyPixelOperation.SourceCopy);
             return bitmap;
         });
+    }
+
+    private void ReplaceCapture(Bitmap? bitmap)
+    {
+        if (ReferenceEquals(_capture, bitmap)) return;
+        _capture?.Dispose();
+        _capture = bitmap;
     }
 
     private void CloseSelectionWindow()
@@ -429,6 +559,9 @@ public class RegionTranslationService : IDisposable
             try { _overlayWindow.Close(); } catch { }
             _overlayWindow = null;
         }
+
+        _reading = null;
+        ReplaceCapture(null);
     }
 
     public void Dispose()

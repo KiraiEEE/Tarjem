@@ -49,17 +49,31 @@ public static class TextReflow
     };
 
     /// <summary>The recognized text with soft wraps joined, one entry per real line.</summary>
-    public static IReadOnlyList<string> LogicalLines(RecognizedText text)
-    {
-        var lines = text.Lines.Where(l => !string.IsNullOrWhiteSpace(l.Text)).ToList();
-        if (lines.Count == 0) return Array.Empty<string>();
-        if (lines.Count == 1) return new[] { lines[0].Text.Trim() };
+    public static IReadOnlyList<string> LogicalLines(RecognizedText text) =>
+        LogicalBlocks(text).Select(b => b.Text).ToList();
 
+    /// <summary>
+    /// The same grouping as <see cref="LogicalLines"/>, keeping where each real line sits on
+    /// screen: which engine lines it was rejoined from, the box around them, and the height of one
+    /// of its rows. The region overlay draws each block's translation back into that box, so a
+    /// heading stays a heading and a menu stays a menu instead of everything collapsing into one
+    /// paragraph.
+    /// </summary>
+    public static IReadOnlyList<TextBlock> LogicalBlocks(RecognizedText text)
+    {
+        var indexed = text.Lines
+            .Select((line, index) => (Line: line, Index: index))
+            .Where(l => !string.IsNullOrWhiteSpace(l.Line.Text))
+            .ToList();
+        if (indexed.Count == 0) return Array.Empty<TextBlock>();
+
+        var lines = indexed.Select(l => l.Line).ToList();
         var maxWidth = lines.Max(Width);
         var lineHeight = MedianHeight(lines);
 
-        var result = new List<string>();
+        var result = new List<TextBlock>();
         var current = new StringBuilder(lines[0].Text.Trim());
+        var members = new List<int> { 0 };
 
         for (var i = 1; i < lines.Count; i++)
         {
@@ -68,16 +82,44 @@ public static class TextReflow
             if (Continues(lines[i - 1], lines[i], maxWidth, lineHeight))
             {
                 Append(current, next);
+                members.Add(i);
             }
             else
             {
-                result.Add(current.ToString());
+                result.Add(Block(current.ToString(), members, indexed));
                 current.Clear().Append(next);
+                members = new List<int> { i };
             }
         }
 
-        result.Add(current.ToString());
+        result.Add(Block(current.ToString(), members, indexed));
         return result;
+    }
+
+    private static TextBlock Block(string text, List<int> members, List<(RecognizedLine Line, int Index)> indexed)
+    {
+        var words = members.SelectMany(m => indexed[m].Line.Words).ToList();
+        var bounds = words.Count == 0
+            ? new TextRect(0, 0, 0, 0)
+            : new TextRect(
+                words.Min(w => w.Bounds.X),
+                words.Min(w => w.Bounds.Y),
+                words.Max(w => w.Bounds.Right) - words.Min(w => w.Bounds.X),
+                words.Max(w => w.Bounds.Bottom) - words.Min(w => w.Bounds.Y));
+
+        var rowHeights = members
+            .Select(m => indexed[m].Line.Words)
+            .Where(ws => ws.Count > 0)
+            .Select(ws => ws.Max(w => w.Bounds.Bottom) - ws.Min(w => w.Bounds.Y))
+            .Where(h => h > 0)
+            .OrderBy(h => h)
+            .ToList();
+
+        return new TextBlock(
+            text,
+            members.Select(m => indexed[m].Index).ToList(),
+            bounds,
+            rowHeights.Count == 0 ? 0 : rowHeights[rowHeights.Count / 2]);
     }
 
     /// <summary>Convenience for callers that want the block as one string, real lines separated by
@@ -194,3 +236,10 @@ public static class TextReflow
         current.Append(next);
     }
 }
+
+/// <summary>One real line of text and where it was on screen.</summary>
+/// <param name="Text">The line, with soft wraps rejoined.</param>
+/// <param name="LineIndices">Indices into <see cref="RecognizedText.Lines"/> it was built from.</param>
+/// <param name="Bounds">The box around every word in it, in capture coordinates.</param>
+/// <param name="RowHeight">Ink height of one of its rows (median), the basis for its font size.</param>
+public sealed record TextBlock(string Text, IReadOnlyList<int> LineIndices, TextRect Bounds, double RowHeight);

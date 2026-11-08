@@ -73,17 +73,18 @@ public class AppSettings
     /// <see cref="Tarjem.Services.TranslationService.TargetLanguages"/>.</summary>
     public string TargetLanguage { get; set; } = "ar";
 
-    /// <summary>ISO code OCR reads from the screen - see
-    /// <see cref="Tarjem.Services.TranslationService.TargetLanguages"/> (same list reused as the
-    /// source-language options). Only "en" gets the full free-dictionary-API lineup; any other
-    /// source forces the dictionary provider to Gemini, since the rest are English-only.</summary>
+    /// <summary>Language OCR reads from the screen - a <see cref="Tarjem.Core.Language.LanguageCatalog"/>
+    /// code. With <see cref="AutoDetectSourceLanguage"/> on, this is the preferred language: it
+    /// represents its script during detection and wins every undecided call.</summary>
     public string SourceLanguage { get; set; } = "en";
 
-    /// <summary>When true, OCR races every supported language that actually has a Windows OCR
-    /// pack installed in parallel and keeps whichever recognized the most text, instead of
-    /// assuming <see cref="SourceLanguage"/>. Slower per-lookup since it's running multiple OCR
-    /// passes instead of one.</summary>
-    public bool AutoDetectSourceLanguage { get; set; }
+    /// <summary>When true, the source language is worked out per lookup: one OCR pass per
+    /// installed script picks the script, the text itself picks the language within it, and
+    /// translators that can detect the language are asked to confirm it.</summary>
+    /// <remarks>On by default from 0.7, for fresh installs only - every existing settings.json
+    /// stores this explicitly, so nobody's choice is changed. It costs one OCR pass per installed
+    /// script, which for most machines is one or two.</remarks>
+    public bool AutoDetectSourceLanguage { get; set; } = true;
 
     /// <summary>When false, lookups are never written to history, the History page and its tray
     /// menu entry are hidden, and the app keeps no record of what was looked up.</summary>
@@ -167,6 +168,16 @@ public class AppSettings
     public bool ExplainShowSourceLink { get; set; } = true;
 
     // ── Overlays ──
+
+    /// <summary>How Alt+W shows its translation. "InPlace" (the default) redraws each block of
+    /// text where it was, in its own colours and size, so the screen reads as if it had been
+    /// written in your language. "Panel" puts the whole translation on one dark plate over the
+    /// selection - plainer, and easier on very busy or animated backgrounds.</summary>
+    public string RegionDisplayMode { get; set; } = "InPlace";
+
+    /// <summary>Target languages picked recently, most recent first. Shown at the top of the
+    /// language pickers on the result windows.</summary>
+    public List<string> RecentTargetLanguages { get; set; } = new();
 
     /// <summary>When true, the region overlay shows the recognized text (smaller, muted)
     /// above the translation. When false, only the translation is shown.</summary>

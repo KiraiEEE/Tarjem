@@ -65,6 +65,13 @@
                 HorizontalAlignment="Left"
                 VerticalAlignment="Top"/>
 
+        <!-- In-place mode: one patch per block of text, each drawn over the text it replaces in
+             that text's own colours. Positioned in code. -->
+        <Canvas x:Name="BlocksLayer"
+                IsHitTestVisible="False"
+                Opacity="0"
+                Visibility="Collapsed"/>
+
         <!-- Translated text, laid out inside the region plate -->
         <Border x:Name="TextContainer"
                 IsHitTestVisible="False"
@@ -141,6 +148,59 @@
                   VerticalAlignment="Center"/>
         </Border>
 
+        <!-- Language pair, e.g. "FR → AR". Opens the From / To picker. -->
+        <Border x:Name="LanguageButton"
+                Background="#E62A2A3A"
+                BorderBrush="#FF3A3A4A"
+                BorderThickness="1"
+                CornerRadius="10"
+                Height="20"
+                Padding="8,0"
+                Cursor="Hand"
+                Opacity="0"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                ToolTipService.InitialShowDelay="300"
+                MouseLeftButtonUp="LanguageButton_Click">
+            <Border.Effect>
+                <DropShadowEffect Color="Black" BlurRadius="6" ShadowDepth="1" Opacity="0.5"/>
+            </Border.Effect>
+            <TextBlock x:Name="LanguageChipText"
+                       Foreground="#FFDDDDDD"
+                       FontFamily="Segoe UI Variable Text, Segoe UI"
+                       FontSize="11"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center"/>
+        </Border>
+
+        <!-- Show the original text again without dismissing. -->
+        <Border x:Name="OriginalButton"
+                Background="#E62A2A3A"
+                BorderBrush="#FF3A3A4A"
+                BorderThickness="1"
+                CornerRadius="10"
+                Width="26"
+                Height="20"
+                Cursor="Hand"
+                Opacity="0"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                ToolTip="Show the original"
+                ToolTipService.InitialShowDelay="300"
+                MouseLeftButtonUp="OriginalButton_Click">
+            <Border.Effect>
+                <DropShadowEffect Color="Black" BlurRadius="6" ShadowDepth="1" Opacity="0.5"/>
+            </Border.Effect>
+            <Path x:Name="OriginalIcon"
+                  Data="M0,4 Q5,-1.5 10,4 Q5,9.5 0,4 Z M5,2.4 A1.6,1.6 0 1 1 4.99,2.4 Z"
+                  Stroke="#FFDDDDDD"
+                  StrokeThickness="1.1"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"/>
+        </Border>
+
         <!-- Copy the translation out. Sits beside the provider chip and is positioned with it. -->
         <Border x:Name="CopyButton"
                 Background="#E62A2A3A"
@@ -178,6 +238,13 @@
                            VerticalAlignment="Center"/>
             </Grid>
         </Border>
+
+        <!-- From / To picker, positioned under the chip row. -->
+        <ContentControl x:Name="LanguagePanelHost"
+                        Visibility="Collapsed"
+                        Focusable="False"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Top"/>
 
         <!-- Provider list, positioned relative to the chip -->
         <Border x:Name="ApiDropdown"

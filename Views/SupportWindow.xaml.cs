@@ -25,7 +25,7 @@ public partial class SupportWindow : Wpf.Ui.Controls.FluentWindow
     /// button disabled and says so underneath it.</summary>
     private const string DonationUrl = "";
 
-    private const string ProjectUrl = "https://github.com/IdleBuilt/Tarjem";
+    private const string ProjectUrl = "https://github.com/KiraiEEE/Tarjem";
 
     private static readonly IEasingFunction EaseOut = new CubicEase { EasingMode = EasingMode.EaseOut };
 

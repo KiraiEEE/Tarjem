@@ -75,49 +75,30 @@ public class TranslationService
         return string.IsNullOrEmpty(settings.DefaultTranslationProvider) ? "google" : settings.DefaultTranslationProvider;
     }
 
-    /// <summary>Languages the translation section can target. IsRtl drives the popup's text
-    /// flow direction for whichever language is currently selected.
-    ///
-    /// English is in here as well as in <see cref="SourceLanguages"/>: leaving it out meant the
-    /// app could read 18 languages but only write 17, and the one it couldn't write was the one
-    /// most people reading a foreign-language game actually want out of it.</summary>
+    /// <summary>Languages the translation section can target - every entry in
+    /// <see cref="LanguageCatalog"/>. Kept in this shape because half the app reads it.</summary>
     public static readonly (string Code, string Name, bool IsRtl)[] TargetLanguages =
-    {
-        ("en", "English", false),
-        ("ar", "Arabic", true),
-        ("es", "Spanish", false),
-        ("fr", "French", false),
-        ("de", "German", false),
-        ("it", "Italian", false),
-        ("pt", "Portuguese", false),
-        ("ru", "Russian", false),
-        ("tr", "Turkish", false),
-        ("nl", "Dutch", false),
-        ("pl", "Polish", false),
-        ("ja", "Japanese", false),
-        ("ko", "Korean", false),
-        ("zh-CN", "Chinese (Simplified)", false),
-        ("zh-TW", "Chinese (Traditional)", false),
-        ("hi", "Hindi", false),
-        ("fa", "Persian", true),
-        ("ur", "Urdu", true),
-    };
+        LanguageCatalog.All.Select(l => (l.Code, l.Name, l.IsRtl)).ToArray();
 
-    /// <summary>Languages OCR can read from the screen - the same set
-    /// <see cref="TargetLanguages"/> covers. Actually usable at runtime only for languages with a
-    /// Windows OCR pack installed - check <see cref="OcrService.IsLanguageAvailable"/>.</summary>
+    /// <summary>Languages OCR can be asked to read - the same set. Actually usable at runtime only
+    /// for languages with a Windows OCR pack installed - check
+    /// <see cref="OcrService.IsLanguageAvailable"/>.</summary>
     public static readonly (string Code, string Name)[] SourceLanguages =
         TargetLanguages.Select(l => (l.Code, l.Name)).ToArray();
 
-    public static bool IsRtlLanguage(string code) =>
-        TargetLanguages.FirstOrDefault(l => l.Code == code).IsRtl;
+    public static bool IsRtlLanguage(string code) => LanguageCatalog.IsRtl(code);
+
+    /// <summary>What an AI prompt calls the source when the app only has a guess at it. Phrased so
+    /// it reads in every prompt ("Rewrite this source-language text in natural Arabic") without
+    /// asserting a language that may be wrong.</summary>
+    private const string UnknownSourceName = "source-language";
 
     public TranslationService(SettingsService settingsService)
     {
         _settingsService = settingsService;
 
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-        _httpClient.DefaultRequestHeaders.Add("User-Agent", "Tarjem/0.4");
+        _httpClient.DefaultRequestHeaders.Add("User-Agent", $"Tarjem/{UpdateService.CurrentVersion}");
 
         _gemini = new Lazy<GeminiService>(() => new GeminiService(settingsService.Current, settingsService.Save, ResolveKey("gemini")));
         _encyclopedia = new Lazy<EncyclopediaService>(() => new EncyclopediaService());
@@ -188,17 +169,58 @@ public class TranslationService
 
     private (string Code, string Name) GetTargetLanguage()
     {
-        var code = _settingsService.Current.TargetLanguage;
-        foreach (var lang in TargetLanguages)
-            if (lang.Code == code) return (lang.Code, lang.Name);
-        return ("ar", "Arabic");
+        var language = LanguageCatalog.Find(_settingsService.Current.TargetLanguage) ?? LanguageCatalog.Find("ar")!;
+        return (language.Code, language.Name);
     }
 
     private static (string Code, string Name) GetSourceLanguage(string code)
     {
-        foreach (var lang in SourceLanguages)
-            if (lang.Code == code) return (lang.Code, lang.Name);
-        return ("en", "English");
+        var language = LanguageCatalog.Find(code) ?? LanguageCatalog.Find("en")!;
+        return (language.Code, language.Name);
+    }
+
+    /// <summary>The same language, by catalog identity rather than by spelling - "zh-Hans" and
+    /// "zh-CN" are one language, and Google answers "iw" for Hebrew.</summary>
+    private static bool SameLanguage(string? a, string? b) =>
+        LanguageCatalog.Find(a) is { } x && LanguageCatalog.Find(b) is { } y && x.Code == y.Code;
+
+    /// <summary>The catalog code for a language a provider reported having detected, or null when
+    /// it's one the app doesn't offer (in which case the guess stands).</summary>
+    private static string? Detected(string? providerCode) =>
+        string.IsNullOrWhiteSpace(providerCode) || providerCode == LanguageCatalog.Auto
+            ? null
+            : LanguageCatalog.Find(providerCode)?.Code;
+
+    // ===================== Per-attempt budgets =====================
+
+    /// <summary>
+    /// How long one keyless source gets before the failover moves on. The shared client's own
+    /// timeout is 8 s, which is fine as a ceiling and far too long as the price of one dead
+    /// source - the popup waited out the whole of it before even asking the next. The AI clients
+    /// enforce their own per-model timeouts, so they are not double-bounded here.
+    /// </summary>
+    private static TimeSpan AttemptBudget(string providerId, bool block) =>
+        IsAiProvider(providerId) ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds(block ? 8 : 5);
+
+    /// <summary>Runs one provider attempt under its budget. A budget that runs out surfaces as a
+    /// plain failure (null), so the chain moves on; the caller's own cancellation still throws.</summary>
+    private static async Task<T?> WithinBudgetAsync<T>(
+        string providerId, bool block, Func<CancellationToken, Task<T?>> attempt, CancellationToken ct) where T : class
+    {
+        var budget = AttemptBudget(providerId, block);
+        if (budget == Timeout.InfiniteTimeSpan) return await attempt(ct);
+
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(budget);
+        try
+        {
+            return await attempt(bounded.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            Log.Debug("{Provider} ran out of its {Budget}s budget; moving on", providerId, budget.TotalSeconds);
+            return null;
+        }
     }
 
     // ===================== The word lookup (Alt+Q) =====================
@@ -212,8 +234,13 @@ public class TranslationService
     /// <param name="asRead">What OCR actually read, when spelling correction changed it. The
     /// dictionary gets asked about this spelling first - see
     /// <see cref="ResolveSpellingAsync"/> for why that decision does not belong in the corrector.</param>
+    /// <param name="sourceIsGuess">True when <paramref name="sourceLanguageCode"/> is the app's
+    /// own guess (auto-detect) rather than the user's statement. Sources that can detect the
+    /// language themselves are then asked to, and when one reports a different language than the
+    /// guess, the answer is relabelled and the definition fetched again in the right language.</param>
     public async Task<TranslationResult> TranslateWord(
-        string word, string fullSentence, string sourceLanguageCode, CancellationToken ct = default, string? asRead = null)
+        string word, string fullSentence, string sourceLanguageCode, CancellationToken ct = default, string? asRead = null,
+        bool sourceIsGuess = false)
     {
         var settings = _settingsService.Current;
         var (sourceLangCode, sourceLangName) = GetSourceLanguage(sourceLanguageCode);
@@ -247,17 +274,45 @@ public class TranslationService
         // language. Translating a word into the language it's already in would walk the entire
         // provider chain only for every one of them to echo the input back and be discarded as
         // "no useful answer" - so don't ask.
-        var needsTranslation = (settings.ShowTranslationSection || settings.ShowInlineWordTranslation)
-                               && !string.Equals(sourceLangCode, targetLangCode, StringComparison.OrdinalIgnoreCase);
+        //
+        // Except when the source is only a guess: then "same language" may just mean the guess was
+        // wrong. Google is asked alone in that case - it detects the language itself and answers in
+        // one cheap request - rather than walking every source to hear the word echoed back.
+        var wantsTranslation = settings.ShowTranslationSection || settings.ShowInlineWordTranslation;
+        var sameLanguage = SameLanguage(sourceLangCode, targetLangCode);
 
-        var translationTask = needsTranslation
-            ? TranslateWordWithFailoverAsync(settings.DefaultTranslationProvider, word, sentence, sourceLangCode, sourceLangName, targetLangCode, targetLangName, ct)
-            : Task.FromResult<TranslationOutcome?>(null);
+        var translationTask = !wantsTranslation || (sameLanguage && !sourceIsGuess)
+            ? Task.FromResult<TranslationOutcome?>(null)
+            : sameLanguage
+                ? TranslateWordWithOneAsync("google", word, sentence, LanguageCatalog.Auto, UnknownSourceName, sourceLangCode, targetLangCode, targetLangName, ct)
+                : TranslateWordWithFailoverAsync(settings.DefaultTranslationProvider, word, sentence,
+                    sourceIsGuess ? LanguageCatalog.Auto : sourceLangCode,
+                    sourceIsGuess ? UnknownSourceName : sourceLangName,
+                    sourceLangCode, targetLangCode, targetLangName, ct);
 
         await Task.WhenAll(dictionaryTask, translationTask);
 
         var dictionary = await dictionaryTask;
         var translation = await translationTask;
+
+        // The translator read the sentence and is sure it's in another language than the guess.
+        // Believe it - it saw a whole sentence, OCR detection saw letter shapes - and fetch the
+        // definition again in that language, since one fetched in the wrong language is at best
+        // empty and at worst a false friend.
+        if (sourceIsGuess && Detected(translation?.DetectedLanguage) is { } detected && !SameLanguage(detected, sourceLangCode))
+        {
+            Log.Debug("Source guessed as {Guess}, translator detected {Detected}", sourceLangCode, detected);
+            (sourceLangCode, sourceLangName) = GetSourceLanguage(detected);
+            result.SourceLanguage = sourceLangCode;
+
+            if (settings.ShowDictionarySection)
+                dictionary = await LookupDictionaryWithFailoverAsync(settings.DefaultDictionaryProvider, word,
+                    sourceLangCode, sourceLangName, targetLangCode, targetLangName, sentence, ct);
+
+            // A translation into the language the text turned out to be in is just the text.
+            if (SameLanguage(sourceLangCode, targetLangCode))
+                translation = null;
+        }
 
         if (dictionary != null)
         {
@@ -507,7 +562,8 @@ public class TranslationService
 
             try
             {
-                var entry = await LookupOneEncyclopediaAsync(provider.Id, term, sourceCode, maxSummaryLength, ct);
+                var entry = await WithinBudgetAsync(provider.Id, block: false,
+                    t => LookupOneEncyclopediaAsync(provider.Id, term, sourceCode, maxSummaryLength, t), ct);
                 if (entry != null) return (provider.Id, entry);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -589,7 +645,8 @@ public class TranslationService
             ct.ThrowIfCancellationRequested();
             try
             {
-                var outcome = await LookupOneDictionaryAsync(provider.Id, word, sourceCode, sourceName, targetCode, targetName, fullSentence, ct);
+                var outcome = await WithinBudgetAsync(provider.Id, block: false,
+                    t => LookupOneDictionaryAsync(provider.Id, word, sourceCode, sourceName, targetCode, targetName, fullSentence, t), ct);
                 if (outcome != null)
                 {
                     if (provider.Id != preferredId)
@@ -991,12 +1048,19 @@ public class TranslationService
 
     // ===================== Translation =====================
 
+    /// <param name="DetectedLanguage">The language the source reported the text to be in, when it
+    /// was asked to detect it.</param>
     public sealed record TranslationOutcome(
-        string ProviderId, string Word, string Sentence, int HighlightStart = -1, int HighlightLength = 0);
+        string ProviderId, string Word, string Sentence, int HighlightStart = -1, int HighlightLength = 0,
+        string? DetectedLanguage = null);
 
+    /// <param name="sourceCode">A catalog code, or <see cref="LanguageCatalog.Auto"/> to have
+    /// sources that can detect the language do so.</param>
+    /// <param name="guessCode">The best guess at the source, for sources that can't detect it
+    /// themselves. Equal to <paramref name="sourceCode"/> unless that is "auto".</param>
     private async Task<TranslationOutcome?> TranslateWordWithFailoverAsync(
         string preferredId, string word, string sentence, string sourceCode, string sourceName,
-        string targetCode, string targetName, CancellationToken ct)
+        string guessCode, string targetCode, string targetName, CancellationToken ct)
     {
         var chain = ProviderCatalog.FailoverChain(ProviderKind.Translation, preferredId, targetCode, HasKey);
 
@@ -1005,7 +1069,8 @@ public class TranslationService
             ct.ThrowIfCancellationRequested();
             try
             {
-                var outcome = await TranslateWordWithOneAsync(provider.Id, word, sentence, sourceCode, sourceName, targetCode, targetName, ct);
+                var outcome = await WithinBudgetAsync(provider.Id, block: false,
+                    t => TranslateWordWithOneAsync(provider.Id, word, sentence, sourceCode, sourceName, guessCode, targetCode, targetName, t), ct);
                 if (outcome != null)
                 {
                     if (provider.Id != preferredId)
@@ -1025,13 +1090,13 @@ public class TranslationService
 
     private async Task<TranslationOutcome?> TranslateWordWithOneAsync(
         string providerId, string word, string sentence, string sourceCode, string sourceName,
-        string targetCode, string targetName, CancellationToken ct)
+        string guessCode, string targetCode, string targetName, CancellationToken ct)
     {
         switch (providerId)
         {
             case "gemini":
             {
-                var r = await _gemini.Value.TranslateAsync(word, sentence, sourceCode, sourceName, targetCode, targetName, ct);
+                var r = await _gemini.Value.TranslateAsync(word, sentence, guessCode, sourceName, targetCode, targetName, ct);
                 if (r == null || string.IsNullOrWhiteSpace(r.ArabicWord)) return null;
                 return new TranslationOutcome("gemini", r.ArabicWord, r.TranslatedSentence,
                     r.TranslatedSentenceHighlightStart, r.TranslatedSentenceHighlightLength);
@@ -1045,36 +1110,48 @@ public class TranslationService
                 return r == null ? null : new TranslationOutcome(providerId, r.Value.Word, r.Value.Sentence);
             }
             case "google":
-            {
-                var translatedWord = await GoogleTranslateAsync(word, sourceCode, targetCode, ct);
-                if (string.IsNullOrWhiteSpace(translatedWord) || translatedWord == word) return null;
-                var translatedSentence = string.IsNullOrEmpty(sentence)
-                    ? ""
-                    : await GoogleTranslateAsync(sentence, sourceCode, targetCode, ct) ?? "";
-                return new TranslationOutcome("google", translatedWord, translatedSentence);
-            }
+            case "lingva":
             case "mymemory":
             {
-                var translatedWord = await MyMemoryTranslateAsync(word, sourceCode, targetCode, ct);
-                if (string.IsNullOrWhiteSpace(translatedWord)) return null;
-                var translatedSentence = string.IsNullOrEmpty(sentence)
-                    ? ""
-                    : await MyMemoryTranslateAsync(sentence, sourceCode, targetCode, ct) ?? "";
-                return new TranslationOutcome("mymemory", translatedWord, translatedSentence);
-            }
-            case "lingva":
-            {
-                var translatedWord = await LingvaTranslateAsync(word, sourceCode, targetCode, ct);
-                if (string.IsNullOrWhiteSpace(translatedWord)) return null;
-                var translatedSentence = string.IsNullOrEmpty(sentence)
-                    ? ""
-                    : await LingvaTranslateAsync(sentence, sourceCode, targetCode, ct) ?? "";
-                return new TranslationOutcome("lingva", translatedWord, translatedSentence);
+                // The word and its sentence are independent requests, so they go out together
+                // instead of paying for two round trips back to back.
+                var from = providerId == "mymemory" && sourceCode == LanguageCatalog.Auto ? guessCode : sourceCode;
+                var wordTask = TranslateRawAsync(providerId, word, from, targetCode, ct);
+                var sentenceTask = string.IsNullOrEmpty(sentence)
+                    ? Task.FromResult(RawTranslation.None)
+                    : TranslateRawAsync(providerId, sentence, from, targetCode, ct);
+
+                await Task.WhenAll(wordTask, sentenceTask);
+                var translatedWord = (await wordTask).Text;
+                var translatedSentence = await sentenceTask;
+
+                if (string.IsNullOrWhiteSpace(translatedWord) ||
+                    string.Equals(translatedWord.Trim(), word.Trim(), StringComparison.OrdinalIgnoreCase))
+                    return null;
+
+                // The sentence is the better witness for which language this is: a lone word like
+                // "Hotel" is half the Latin languages at once.
+                var detected = translatedSentence.Detected ?? (await wordTask).Detected;
+                return new TranslationOutcome(providerId, translatedWord, translatedSentence.Text ?? "", DetectedLanguage: detected);
             }
             default:
                 return null;
         }
     }
+
+    /// <summary>One keyless request: the translation, and the language the service detected.</summary>
+    private readonly record struct RawTranslation(string? Text, string? Detected)
+    {
+        public static readonly RawTranslation None = new(null, null);
+    }
+
+    private Task<RawTranslation> TranslateRawAsync(string providerId, string text, string sourceCode, string targetCode, CancellationToken ct) =>
+        providerId switch
+        {
+            "lingva" => LingvaTranslateAsync(text, sourceCode, targetCode, ct),
+            "mymemory" => MyMemoryTranslateAsync(text, sourceCode, targetCode, ct),
+            _ => GoogleTranslateAsync(text, sourceCode, targetCode, ct),
+        };
 
     /// <summary>On-demand translation from the popup's source switcher - one named source only,
     /// for the same reason the dictionary switcher doesn't fail over.</summary>
@@ -1086,7 +1163,7 @@ public class TranslationService
 
         try
         {
-            var outcome = await TranslateWordWithOneAsync(providerId, word, sentence, srcCode, srcName, tgtCode, tgtName, ct);
+            var outcome = await TranslateWordWithOneAsync(providerId, word, sentence, srcCode, srcName, srcCode, tgtCode, tgtName, ct);
             return outcome == null
                 ? TranslationLookupResult.Failed("Translation failed - the service may be unavailable.")
                 : new TranslationLookupResult(outcome.Word, outcome.Sentence, null);
@@ -1109,6 +1186,10 @@ public class TranslationService
 
     // ===================== Region text (Alt+W) =====================
 
+    /// <summary>A translated block of text: what came back, who answered, and - when the source
+    /// was asked to detect it - which language the text turned out to be in.</summary>
+    public sealed record BlockTranslation(string Text, string ProviderId, string? DetectedLanguage);
+
     /// <summary>
     /// Translates a whole block of screen text, falling over between sources the same way the
     /// word lookup does. The region overlay has nothing to fall back on if this returns null -
@@ -1116,7 +1197,14 @@ public class TranslationService
     /// entire chain before giving up.
     /// </summary>
     public async Task<string?> TranslateTextWithFailoverAsync(
-        string preferredId, string text, string sourceLanguageCode = "en", CancellationToken ct = default)
+        string preferredId, string text, string sourceLanguageCode = "en", CancellationToken ct = default) =>
+        (await TranslateBlockAsync(preferredId, text, sourceLanguageCode, sourceIsGuess: false, ct))?.Text;
+
+    /// <inheritdoc cref="TranslateTextWithFailoverAsync"/>
+    /// <param name="sourceIsGuess">The source language is the app's guess; sources that can detect
+    /// it are asked to, and the language they report comes back in the result.</param>
+    public async Task<BlockTranslation?> TranslateBlockAsync(
+        string preferredId, string text, string sourceLanguageCode, bool sourceIsGuess, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
 
@@ -1125,17 +1213,22 @@ public class TranslationService
         // Re-selecting the same region, or flipping back to a provider already tried, used to
         // re-hit the network every time. Block translation is the app's slowest and most
         // rate-limit-hungry call, so it's the one most worth not repeating.
-        var cacheKey = BlockCacheKey(preferredId, text, sourceLanguageCode, targetCode);
-        if (_blockCache.TryGetValue(cacheKey, out var cached))
-            return cached;
+        var cacheKey = BlockCacheKey(preferredId, text, sourceIsGuess ? LanguageCatalog.Auto : sourceLanguageCode, targetCode);
+        lock (_blockCache)
+        {
+            if (_blockCache.TryGetValue(cacheKey, out var cached))
+                return cached;
+        }
 
         var chain = ProviderCatalog.FailoverChain(ProviderKind.Translation, preferredId, targetCode, HasKey);
 
         foreach (var provider in chain)
         {
             ct.ThrowIfCancellationRequested();
-            var translated = await TranslateTextWithProviderAsync(provider.Id, text, sourceLanguageCode, ct);
-            if (!string.IsNullOrWhiteSpace(translated))
+            var translated = await WithinBudgetAsync(provider.Id, block: true,
+                t => TranslateTextWithOneAsync(provider.Id, text, sourceLanguageCode, sourceIsGuess, t), ct);
+
+            if (translated != null)
             {
                 if (provider.Id != preferredId)
                     Log.Debug("Region translation failover: {Preferred} did not answer, {Actual} did", preferredId, provider.Id);
@@ -1151,46 +1244,57 @@ public class TranslationService
     // Bounded so a long session translating a lot of screen text can't grow without limit; the
     // insertion queue makes eviction oldest-first without needing a full LRU.
     private const int MaxCachedBlocks = 60;
-    private readonly Dictionary<string, string> _blockCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, BlockTranslation> _blockCache = new(StringComparer.Ordinal);
     private readonly Queue<string> _blockCacheOrder = new();
 
     private static string BlockCacheKey(string providerId, string text, string sourceCode, string targetCode) =>
         $"{providerId}{sourceCode}{targetCode}{text}";
 
-    private void RememberBlock(string key, string translated)
+    private void RememberBlock(string key, BlockTranslation translated)
     {
-        if (!_blockCache.TryAdd(key, translated)) return;
+        lock (_blockCache)
+        {
+            if (!_blockCache.TryAdd(key, translated)) return;
 
-        _blockCacheOrder.Enqueue(key);
-        while (_blockCacheOrder.Count > MaxCachedBlocks)
-            _blockCache.Remove(_blockCacheOrder.Dequeue());
+            _blockCacheOrder.Enqueue(key);
+            while (_blockCacheOrder.Count > MaxCachedBlocks)
+                _blockCache.Remove(_blockCacheOrder.Dequeue());
+        }
     }
 
     /// <summary>Translates a block of text with one specific provider. Returns null when the
     /// provider produced nothing, so the caller can fall back.</summary>
     public async Task<string?> TranslateTextWithProviderAsync(
-        string providerId, string text, string sourceLanguageCode = "en", CancellationToken ct = default)
+        string providerId, string text, string sourceLanguageCode = "en", CancellationToken ct = default) =>
+        (await TranslateTextWithOneAsync(providerId, text, sourceLanguageCode, sourceIsGuess: false, ct))?.Text;
+
+    private async Task<BlockTranslation?> TranslateTextWithOneAsync(
+        string providerId, string text, string sourceLanguageCode, bool sourceIsGuess, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
 
         var (srcCode, srcName) = GetSourceLanguage(sourceLanguageCode);
         var (tgtCode, tgtName) = GetTargetLanguage();
+        var aiSourceName = sourceIsGuess ? UnknownSourceName : srcName;
+        var keylessSource = sourceIsGuess ? LanguageCatalog.Auto : srcCode;
 
         try
         {
-            var translated = providerId switch
+            RawTranslation translated = providerId switch
             {
-                "gemini" => await _gemini.Value.TranslateTextAsync(text, srcName, tgtName, ct),
-                "groq" => Groq() is { } g ? await g.TranslateTextAsync(text, srcName, tgtName, ct) : null,
-                "cerebras" => Cerebras() is { } c ? await c.TranslateTextAsync(text, srcName, tgtName, ct) : null,
+                "gemini" => new(await _gemini.Value.TranslateTextAsync(text, aiSourceName, tgtName, ct), null),
+                "groq" => new(Groq() is { } g ? await g.TranslateTextAsync(text, aiSourceName, tgtName, ct) : null, null),
+                "cerebras" => new(Cerebras() is { } c ? await c.TranslateTextAsync(text, aiSourceName, tgtName, ct) : null, null),
                 "mymemory" => await MyMemoryTranslateAsync(text, srcCode, tgtCode, ct),
-                "lingva" => await LingvaTranslateAsync(text, srcCode, tgtCode, ct),
-                _ => await GoogleTranslateAsync(text, srcCode, tgtCode, ct),
+                "lingva" => await LingvaTranslateAsync(text, keylessSource, tgtCode, ct),
+                _ => await GoogleTranslateAsync(text, keylessSource, tgtCode, ct),
             };
 
             // Every one of these endpoints echoes the input back when it can't translate; treat
             // that as "nothing useful" so the caller's fallback gets a turn.
-            return string.IsNullOrWhiteSpace(translated) || translated == text ? null : translated;
+            return string.IsNullOrWhiteSpace(translated.Text) || translated.Text == text
+                ? null
+                : new BlockTranslation(translated.Text, providerId, Detected(translated.Detected));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
@@ -1202,51 +1306,78 @@ public class TranslationService
 
     // ===================== Raw endpoints =====================
 
-    private async Task<string?> GoogleTranslateAsync(string text, string sourceLang, string targetLang, CancellationToken ct)
+    /// <summary>Google and Lingva's name for a catalog code ("auto" passes through).</summary>
+    private static string GoogleCode(string code) =>
+        code == LanguageCatalog.Auto ? code : LanguageCatalog.Find(code)?.Google ?? code;
+
+    /// <summary>GET URLs past this length start being refused, and a region of screen text can
+    /// easily exceed it once escaped. Longer text is sent as a form POST instead.</summary>
+    private const int MaxGetQueryLength = 1800;
+
+    private async Task<RawTranslation> GoogleTranslateAsync(string text, string sourceLang, string targetLang, CancellationToken ct)
     {
         try
         {
-            var url = $"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sourceLang}&tl={targetLang}&dt=t&q={Uri.EscapeDataString(text)}";
-            using var response = await _httpClient.GetAsync(url, ct);
-            if (!response.IsSuccessStatusCode) return null;
+            var baseUrl = $"https://translate.googleapis.com/translate_a/single?client=gtx&sl={GoogleCode(sourceLang)}&tl={GoogleCode(targetLang)}&dt=t";
+            var escaped = Uri.EscapeDataString(text);
+
+            using var request = escaped.Length <= MaxGetQueryLength
+                ? new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}&q={escaped}")
+                : new HttpRequestMessage(HttpMethod.Post, baseUrl)
+                {
+                    Content = new FormUrlEncodedContent(new[] { new KeyValuePair<string, string>("q", text) }),
+                };
+
+            using var response = await _httpClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode) return RawTranslation.None;
 
             using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-            if (json.RootElement.ValueKind != JsonValueKind.Array || json.RootElement.GetArrayLength() == 0)
-                return null;
+            var root = json.RootElement;
+            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
+                return RawTranslation.None;
 
-            var segments = json.RootElement[0];
-            if (segments.ValueKind != JsonValueKind.Array) return null;
+            var segments = root[0];
+            if (segments.ValueKind != JsonValueKind.Array) return RawTranslation.None;
 
             var parts = new List<string>();
             foreach (var segment in segments.EnumerateArray())
             {
                 if (segment.ValueKind == JsonValueKind.Array && segment.GetArrayLength() > 0 &&
+                    segment[0].ValueKind == JsonValueKind.String &&
                     segment[0].GetString() is { Length: > 0 } part)
                     parts.Add(part);
             }
 
-            return parts.Count == 0 ? null : string.Concat(parts);
+            // [2] is the source language Google settled on - the detected one when sl=auto.
+            var detected = root.GetArrayLength() > 2 && root[2].ValueKind == JsonValueKind.String
+                ? root[2].GetString()
+                : null;
+
+            return parts.Count == 0 ? RawTranslation.None : new RawTranslation(string.Concat(parts), detected);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Log.Debug(ex, "Google translation failed");
-            return null;
+            return RawTranslation.None;
         }
     }
 
-    private async Task<string?> MyMemoryTranslateAsync(string text, string sourceLang, string targetLang, CancellationToken ct)
+    private async Task<RawTranslation> MyMemoryTranslateAsync(string text, string sourceLang, string targetLang, CancellationToken ct)
     {
-        var url = $"https://api.mymemory.translated.net/get?q={Uri.EscapeDataString(text)}&langpair={sourceLang}|{targetLang}";
+        // MyMemory has no auto-detect; an unknown source is best sent as English, which is what
+        // most screen text that reaches this far down the chain is.
+        var from = sourceLang == LanguageCatalog.Auto ? "en" : LanguageCatalog.Find(sourceLang)?.Code ?? sourceLang;
+        var url = $"https://api.mymemory.translated.net/get?q={Uri.EscapeDataString(text)}&langpair={from}|{targetLang}";
         using var response = await _httpClient.GetAsync(url, ct);
-        if (!response.IsSuccessStatusCode) return null;
+        if (!response.IsSuccessStatusCode) return RawTranslation.None;
 
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         return json.RootElement.TryGetProperty("responseData", out var data) &&
                data.TryGetProperty("translatedText", out var textEl) &&
                textEl.ValueKind == JsonValueKind.String
-            ? textEl.GetString()
-            : null;
+            ? new RawTranslation(textEl.GetString(), null)
+            : RawTranslation.None;
     }
 
     // Public Lingva instances are community-run and individually flaky - tried in order, first
@@ -1264,19 +1395,31 @@ public class TranslationService
         "https://translate.plausibility.cloud",
     };
 
-    private async Task<string?> LingvaTranslateAsync(string text, string sourceLang, string targetLang, CancellationToken ct)
+    /// <summary>Each community instance gets this long. They are tried in turn, and a dead one
+    /// used to cost the shared client's full 8 s before the next was even asked.</summary>
+    private static readonly TimeSpan LingvaInstanceBudget = TimeSpan.FromSeconds(4);
+
+    private async Task<RawTranslation> LingvaTranslateAsync(string text, string sourceLang, string targetLang, CancellationToken ct)
     {
         foreach (var instance in LingvaInstances)
         {
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(LingvaInstanceBudget);
             try
             {
-                var url = $"{instance}/api/v1/{sourceLang}/{targetLang}/{Uri.EscapeDataString(text)}";
-                using var response = await _httpClient.GetAsync(url, ct);
+                var url = $"{instance}/api/v1/{GoogleCode(sourceLang)}/{GoogleCode(targetLang)}/{Uri.EscapeDataString(text)}";
+                using var response = await _httpClient.GetAsync(url, bounded.Token);
                 if (!response.IsSuccessStatusCode) continue;
 
-                using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(bounded.Token));
                 if (json.RootElement.TryGetProperty("translation", out var t) && t.GetString() is { Length: > 0 } value)
-                    return value;
+                {
+                    var detected = json.RootElement.TryGetProperty("info", out var info) &&
+                                   info.TryGetProperty("detectedSource", out var d) && d.ValueKind == JsonValueKind.String
+                        ? d.GetString()
+                        : null;
+                    return new RawTranslation(value, detected);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
@@ -1284,7 +1427,7 @@ public class TranslationService
                 Log.Debug(ex, "Lingva instance {Instance} failed", instance);
             }
         }
-        return null;
+        return RawTranslation.None;
     }
 
     // ===================== Health checks =====================

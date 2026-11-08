@@ -7,7 +7,7 @@
 <p align="center">
   <b>Screen translator overlay</b><br/>
   Hover a word, press <kbd>Alt</kbd>+<kbd>Q</kbd>, and get an instant translation.<br/>
-  Drag a box with <kbd>Alt</kbd>+<kbd>W</kbd> to translate everything inside it.<br/>
+  Drag a box with <kbd>Alt</kbd>+<kbd>W</kbd> and the text inside it is rewritten in your language, in place.<br/>
   Hit <kbd>Alt</kbd>+<kbd>E</kbd> on a name to find out what it actually is.
 </p>
 
@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%2B-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/.NET-8.0-purple" alt=".NET 8" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-  <img src="https://img.shields.io/badge/version-0.6.0-orange" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.7.0-orange" alt="Version" />
 </p>
 
 <p align="center">
@@ -52,10 +52,35 @@ instead of a "Read more" link.
 | | |
 |---|---|
 | <kbd>Alt</kbd>+<kbd>Q</kbd> | Translate the word under the cursor, in the context of its sentence |
-| <kbd>Alt</kbd>+<kbd>W</kbd> | Drag a box; everything inside it is translated in place |
+| <kbd>Alt</kbd>+<kbd>W</kbd> | Drag a box; each line inside it is redrawn in your language, where it was |
 | <kbd>Alt</kbd>+<kbd>E</kbd> | "What is this?" — asks Wikipedia about the word under the cursor, and translates the answer |
 
 All three are rebindable in Settings.
+
+## Translating a region
+
+<kbd>Alt</kbd>+<kbd>W</kbd> redraws each line of text where it was, on the background it sat on, in
+its own text colour and at its own size. A blue button stays a blue button, a heading stays a
+heading, and everything in the selection that wasn't text is left exactly as it was. The eye
+button above the selection shows the original again; clicking anywhere else closes it.
+
+If you'd rather read the whole translation on one card - over a busy or moving game scene, say -
+set **Style** to *Panel* under Settings → Overlays. Tarjem also falls back to the panel on its own
+when a translator merges or splits lines, because one readable block is better than lines in the
+wrong places.
+
+## Changing language
+
+Every result has a small language label - *EN → AR* - on the popup, the "what is this?" card and
+the region overlay. Click it to pick another language to translate from or to; the answer on screen
+is redone at once, and the choice becomes the default. The tray icon has the same two menus, and a
+swap button flips the pair.
+
+**Auto-detect** (the default on new installs) works the language out on every lookup: one OCR pass
+per installed script finds the script, letters and common words pick the language within it, and
+the translator confirms it from the whole sentence. When the translator disagrees with the guess,
+it wins, and the definition is fetched again in the right language. Copied text is detected even
+when a source language is set, since there's no OCR behind it - unless you pick its language on the result.
 
 **Or don't use a shortcut at all.** Turn on *Button when you select text* and selecting anything —
 in a browser, a PDF, a document — puts a small Tarjem button beside it. This is the most accurate
@@ -80,10 +105,20 @@ Speech.
 
 ## Languages
 
-18 languages both ways — including English itself as a target, so you can read Japanese and get
-English out — with Arabic, Persian and Urdu rendered right-to-left in IBM Plex Sans Arabic.
-Reading a language other than English needs its Windows OCR pack installed (Windows Settings →
-Time & language → Language & region).
+36 languages to translate into, and every one Windows can read to translate from: English, Arabic,
+Spanish, French, German, Italian, Portuguese, Russian, Ukrainian, Turkish, Dutch, Polish, Czech,
+Slovak, Romanian, Hungarian, Greek, Bulgarian, Croatian, Swedish, Danish, Norwegian, Finnish,
+Japanese, Korean, Chinese (Simplified and Traditional), Vietnamese, Indonesian, Malay, Thai, Hindi,
+Bengali, Hebrew, Persian and Urdu. Arabic, Hebrew, Persian and Urdu are laid out right to left.
+
+Reading a language needs its Windows OCR pack (Windows Settings → Time & language → Language &
+region). The pickers list the languages your PC can already read first and mark the rest.
+
+- **Japanese** is split into real words with the Windows word breaker, so <kbd>Alt</kbd>+<kbd>Q</kbd>
+  looks up 天気, not 天. Chinese gets the same once a Chinese language is installed in Windows;
+  without one it falls back to single characters, still translated in the context of the sentence.
+- **Hindi, Bengali, Arabic** and other scripts with combining marks keep them. Earlier versions
+  stripped vowel signs before the lookup, which turned real words into different ones.
 
 ## Building
 
@@ -100,6 +135,10 @@ build is running and when it was compiled.
 
 Packaging with bundled API keys: put them in a `.env` beside the built exe, run
 `Tarjem.exe --pack-keys`, delete the `.env`, then build the installer.
+
+**Tests:** `Tarjem.Core.Tests` covers the logic that has no desktop dependency (word picking, line
+reflow, language detection, the in-place colour sampling); `Tarjem.UiTests` constructs every window
+and drives the overlays on a real STA thread.
 
 **Building a release:**
 ```
